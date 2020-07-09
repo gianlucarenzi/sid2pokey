@@ -1,0 +1,1143 @@
+# -----------------------------------------------------------------------------
+#
+# SID 2 GUMBY
+#
+# Copyright (C) 2012 by Ivo van Poorten
+# General Public License Version 3.0
+#
+# -----------------------------------------------------------------------------
+
+    .org 0x7800
+
+L dlst2
+    .byte 112 112 112 112 112 112 112
+    .byte $((64+2))
+    .word $(($data))
+    .byte 112 2 112 2 112 112 112 2 112 2 112 2
+    .byte 65
+    .word $dlst2
+    .byte 0
+
+    .align 0x0100
+
+L data
+    .screen "                             SID 2 GUMBY"
+    .screen "                      by Ivo van Poorten"
+    .screen "                            (C) 2012 TGK"
+
+# SONGS -----------------------------------------------------------------------
+
+    case "$SONG" in
+    wisdom)
+        .screen "  Wisdom                                "
+        .screen "  by Thomas E. Petersen (Laxity)        "
+        .screen "  (C) 1993 Vibrants                     "
+        .org 0x8000
+        player_init=0x8000
+        player_play=0x8003
+        .binary wisdom.bin
+        ;;
+
+    omahd)
+        .screen "  One Man and His Droid                 "
+        .screen "  by Rob Hubbard                        "
+        .screen "  (C) 1985 Mastertronic                 "
+        .org 0x8000
+        .binary omahd.bin
+        player_init=0x8000
+        player_play=0x8012
+        ;;
+
+    warhawk)
+        .screen "  Warhawk                               "
+        .screen "  by Rob Hubbard                        "
+        .screen "  (C) 1986 Firebird                     "
+        .org 0x80e8
+        .binary warhawk.bin
+        player_init=0x80e8
+        player_play=0x8112
+        ;;
+
+    mom)
+        .screen "  The Master Of Magic                   "
+        .screen "  by Rob Hubbard                        "
+        .screen "  (C) 1985 MAD/Mastertronic             "
+        .org 0x80f8
+        .binary mom.bin
+        player_init=0x80f8
+        player_play=0x80fb
+        ;;
+
+    toas)
+        .screen "  Thing On A Spring                     "
+        .screen "  by Rob Hubbard                        "
+        .screen "  (C) 1985 Gremlin Graphics             "
+        .org 0x8000
+        .binary toas.bin
+        player_init=0x8000
+        player_play=0x8012
+        ;;
+#
+    ik)
+        .screen "  International Karate                  "
+        .screen "  by Rob Hubbard                        "
+        .screen "  (C) 1986 System 3                     "
+        .org 0xae00
+        .binary ik.bin
+        player_init=0xae00
+        player_play=0xae0c
+        ;;
+
+    lightforce)
+        .screen "  Lightforce                            "
+        .screen "  by Rob Hubbard                        "
+        .screen "  (C) 1986 FTL                          "
+        .org 0xa000
+        player_init=0xa0b9
+        player_play=0xa0bf
+        .binary lf.bin
+        CH_LEFT=2 ; CH_MID=1 ; CH_RIGHT=3
+        MID_HALF_VOLUME=0
+        ;;
+
+    comets)
+        .screen "  Crazy Comets                          "
+        .screen "  by Rob Hubbard                        "
+        .screen "  (C) 1985 Martech                      "
+        .org 0x8000
+        player_init=0x8000
+        player_play=0x800c
+        .binary comets.bin
+        ;;
+
+    commando)
+        .screen "  Commando                              "
+        .screen "  by Rob Hubbard                        "
+        .screen "  (C) 1985 Elite                        "
+        .org 0x8000
+        player_init=0x8f80
+        player_play=0x8012
+        .binary commando.bin
+        ;;
+
+    sanxion)
+        .screen "  Sanxion                               "
+        .screen "  by Rob Hubbard                        "
+        .screen "  (C) 1987 Thalamus                     "
+        .org 0x8000
+        player_init=0x8e00
+        player_play=0x8e20
+        .binary sanxion.bin
+        ;;
+
+    delta)
+        .screen "  Delta                                 "
+        .screen "  by Rob Hubbard                        "
+        .screen "  (C) 1987 Thalamus                     "
+        .org 0x8000
+        player_init=0x8757
+        player_play=0x81e4
+        .binary delta.bin
+        TUNE=11
+        ;;
+
+    monty)
+        .screen "  Monty On The Run                      "
+        .screen "  by Rob Hubbard                        "
+        .screen "  (C) 1985 Gremlin Graphics             "
+        .org 0x8000
+        player_init=0x9554
+        player_play=0x8012
+        .binary monty.bin
+        ;;
+
+    freeze)
+        .screen "  Freeze                                "
+        .screen "  by Thomas E. Petersen (Laxity)        "
+        .screen "  (C) 1993 Vibrants                     "
+        .org 0xa000
+        player_init=0xa000
+        player_play=0xa006
+        .binary reloc.bin
+        CH_LEFT=2 ; CH_MID=1 ; CH_RIGHT=3
+        MID_HALF_VOLUME=0
+        ;;
+
+    mythm)
+        .screen "  Myth Mix                              "
+        .screen "  by Jeroen Tel                         "
+        .screen "  (C) 1989 Maniacs of Noise             "
+        .org 0x8000
+        player_init=0x8000
+        player_play=0x8006
+        .binary mythm.bin
+        CH_LEFT=1 ; CH_MID=3 ; CH_RIGHT=2
+        MID_HALF_VOLUME=0
+        ;;
+
+    jt42)
+        .screen "  JT42                                  "
+        .screen "  by Jeroen Tel                         "
+        .screen "  (C) 1990 Maniacs of Noise             "
+        .org 0x9000
+        player_init=0x9083
+        player_play=0x90bb
+        .binary jt42.bin
+        CH_LEFT=1 ; CH_MID=3 ; CH_RIGHT=2
+        MID_HALF_VOLUME=0
+        ;;
+
+    cybernoid)
+        .screen "  Cybernoid                             "
+        .screen "  by Jeroen Tel / Maniacs of Noise      "
+        .screen "  (C) 1988 Hewson                       "
+        .org 0xae00
+        player_init=0xae35
+        player_play=0xae98
+        .binary cn.bin
+        CH_LEFT=2 ; CH_MID=1 ; CH_RIGHT=3
+        ;;
+
+    cybernoid2)
+        .screen "  Cybernoid II                          "
+        .screen "  by Jeroen Tel / Maniacs of Noise      "
+        .screen "  (C) 1988 Hewson                       "
+        .org 0xa600
+        player_init=0xa606
+        player_play=0xa626
+        .binary cn2.bin
+        ;;
+
+    ashes)
+        .screen "  Ashes to Ashes                        "
+        .screen "  by Sascha Zeidler (Linus)             "
+        .screen "  (C) 2009 Crest                        "
+        .org 0x8900
+        player_init=0x8900
+        player_play=0x8903
+        .binary ashes.bin
+        ;;
+
+    *)
+        echo "SONG not set. Use e.g. export SONG=ik" >&2
+        exit 1
+        ;;
+    esac
+
+# CONSTANTS -------------------------------------------------------------------
+
+zp=0xf0
+
+volume_v1=$((zp+2))
+volume_v2=$((zp+3))
+volume_v3=$((zp+4))
+temp1=$((zp+5))
+temp2=$((zp+6))
+
+AUDF1=0xd200
+AUDC1=0xd201
+AUDF2=0xd202
+AUDC2=0xd203
+AUDF3=0xd204
+AUDC3=0xd205
+AUDF4=0xd206
+AUDC4=0xd207
+AUDCTL=0xd208
+STIMER=0xd209
+SKREST=0xd20a           # RANDOM is a shell variable returning a random number
+IRQEN=0xd20e
+SKCTL=0xd20f
+
+gAUDF1=0xd210
+gAUDC1=0xd211
+gAUDF2=0xd212
+gAUDC2=0xd213
+gAUDF3=0xd214
+gAUDC3=0xd215
+gAUDF4=0xd216
+gAUDC4=0xd217
+gAUDCTL=0xd218
+gSTIMER=0xd219
+gSKREST=0xd21a           # RANDOM is a shell variable returning a random number
+gSKCTL=0xd21f
+
+PORTB=0xd301
+
+DMACTL=0xd400
+VCOUNT=0xd40b
+NMIEN=0xd40e
+NMIRES=0xd40f
+
+COLBK=0xd01a
+
+SIDV1FREQLO=0x1000
+SIDV1FREQHI=$(($SIDV1FREQLO+0x01))
+SIDV1PWLO=$(($SIDV1FREQLO  +0x02))
+SIDV1PWHI=$(($SIDV1FREQLO  +0x03))
+SIDV1CTRL=$(($SIDV1FREQLO  +0x04))
+SIDV1AD=$(($SIDV1FREQLO    +0x05))
+SIDV1SR=$(($SIDV1FREQLO    +0x06))
+
+SIDV2FREQLO=$(($SIDV1FREQLO+0x07))
+SIDV2FREQHI=$(($SIDV1FREQLO+0x08))
+SIDV2PWLO=$(($SIDV1FREQLO  +0x09))
+SIDV2PWHI=$(($SIDV1FREQLO  +0x0a))
+SIDV2CTRL=$(($SIDV1FREQLO  +0x0b))
+SIDV2AD=$(($SIDV1FREQLO    +0x0c))
+SIDV2SR=$(($SIDV1FREQLO    +0x0d))
+
+SIDV3FREQLO=$(($SIDV1FREQLO+0x0e))
+SIDV3FREQHI=$(($SIDV1FREQLO+0x0f))
+SIDV3PWLO=$(($SIDV1FREQLO  +0x10))
+SIDV3PWHI=$(($SIDV1FREQLO  +0x11))
+SIDV3CTRL=$(($SIDV1FREQLO  +0x12))
+SIDV3AD=$(($SIDV1FREQLO    +0x13))
+SIDV3SR=$(($SIDV1FREQLO    +0x14))
+
+SIDFCLO=$(($SIDV1FREQLO    +0x15))
+SIDFCHI=$(($SIDV1FREQLO    +0x16))
+SIDRESFILT=$(($SIDV1FREQLO +0x17))
+SIDMODEVOL=$(($SIDV1FREQLO +0x18))
+SIDPOTX=$(($SIDV1FREQLO    +0x19))
+SIDPOTY=$(($SIDV1FREQLO    +0x1a))
+SIDOSC3=$(($SIDV1FREQLO    +0x1b))
+SIDENV3=$(($SIDV1FREQLO    +0x1c))
+
+#--------------------------
+
+# which tune to play?
+
+TUNE=${TUNE:-0}
+
+# Adjust these if you want to change the channel mapping
+
+# low frequencies on both pokeys might give problems because we cannot
+# write both registers at the same time. if they turn out to be (near)
+# 180 degrees out of phase, they cancel eachother out.
+
+# so, most of the time it's best to put the bass on one side and chords
+# or lead in the middle.
+
+CH_LEFT=${CH_LEFT:-1}
+CH_MID=${CH_MID:-2}
+CH_RIGHT=${CH_RIGHT:-3}
+
+# "mid" voice louder and/or move to one side
+# some songs switch channels once in a while and there is no mapping
+# to avoid the out-of-phase-bass problem, so you can move it to
+# the left here and increase its volume. You can also increase the
+# volume and leave it on two channels.
+
+MID_HALF_VOLUME=${MID_HALF_VOLUME:-1}
+MID_ONESIDE=${MID_ONESIDE:-0}
+
+#--------------------------
+
+eval ONPOKEY1_v=\$volume_v$CH_LEFT
+eval ONPOKEY1_flo=\$SIDV${CH_LEFT}FREQLO
+eval ONPOKEY1_fhi=\$SIDV${CH_LEFT}FREQHI
+eval ONPOKEY1_ctrl=\$SIDV${CH_LEFT}CTRL
+eval ONBOTH_v=\$volume_v$CH_MID
+eval ONBOTH_flo=\$SIDV${CH_MID}FREQLO
+eval ONBOTH_fhi=\$SIDV${CH_MID}FREQHI
+eval ONBOTH_ctrl=\$SIDV${CH_MID}CTRL
+eval ONPOKEY2_v=\$volume_v$CH_RIGHT
+eval ONPOKEY2_flo=\$SIDV${CH_RIGHT}FREQLO
+eval ONPOKEY2_fhi=\$SIDV${CH_RIGHT}FREQHI
+eval ONPOKEY2_ctrl=\$SIDV${CH_RIGHT}CTRL
+
+#--------------------------
+
+frqzp() {
+    lda $1
+    sta.z $zp
+    lda $(($1+1))
+    sta.z $(($zp+1))
+}
+
+rolzp() {
+    clc
+    rol.z $zp
+    rol.z $(($zp+1))
+}
+
+rorzp() {
+    clc
+    ror.z $(($zp+1))
+    ror.z $(($zp))
+}
+
+addzp() {
+    clc
+    lda.z $zp
+    adc. `lsb $1`
+    sta.z $zp
+    lda.z $(($zp+1))
+    adc. `msb $1`
+    sta.z $(($zp+1))
+}
+
+subzp() {
+    sec
+    lda.z $zp
+    sbc. `lsb $1`
+    sta.z $zp
+    lda.z $(($zp+1))
+    sbc. `msb $1`
+    sta.z $(($zp+1))
+}
+
+# TABLES ----------------------------------------------------------------------
+
+    .org 0x2000
+
+    .binary "tables.dat"
+
+tab16=0x2000
+tab15=$((tab16+0x1600*2))
+tab14=$((tab15+0x0480*2))
+tab13=$((tab14+0x0300*2))
+tab12=$((tab13+0x0240*2))
+tab11=$((tab12+0x0190*2))
+tab10=$((tab11+0x0120*2))
+tab09=$((tab10+0x00c8*2))
+
+    . ./adsr.sh65
+
+# MAIN ------------------------------------------------------------------------
+
+L main
+    sei
+
+    ldy. 0x1f
+    lda. 0
+L clear_pokeys
+    sta $AUDF1,y
+    dey
+    bpl $clear_pokeys
+
+    sta $IRQEN
+    sta $NMIEN
+    sta $NMIRES
+
+    tay
+
+# copy charset
+
+    ldx. 0xff
+L copycs
+    stx $PORTB
+    lda 0xe000,y
+    dex
+    stx $PORTB
+    inx
+    sta 0xe000,y
+
+    stx $PORTB
+    lda 0xe100,y
+    dex
+    stx $PORTB
+    inx
+    sta 0xe100,y
+
+    stx $PORTB
+    lda 0xe200,y
+    dex
+    stx $PORTB
+    inx
+    sta 0xe200,y
+
+    stx $PORTB
+    lda 0xe300,y
+    dex
+    stx $PORTB
+    inx
+    sta 0xe300,y
+
+    dey
+    bne $copycs
+
+# set nmi
+
+    lda. `lsb $nmi`
+    sta 0xfffa
+    lda. `msb $nmi`
+    sta 0xfffb
+    cli
+
+    lda. $TUNE
+    jsr $player_init
+
+# init pokey
+
+    lda. 0xa0
+    sta $shadow_AUDC1
+    sta $shadow_AUDC2
+    sta $shadow_AUDC3
+    sta $shadow_AUDC4
+    sta $shadow_gAUDC1
+    sta $shadow_gAUDC2
+    sta $shadow_gAUDC3
+    sta $shadow_gAUDC4
+
+    lda. 3
+    sta $SKCTL
+    sta $gSKCTL
+
+    lda. $((0x40+0x20+0x10+0x08))       # 1.77MHz ch1 and ch3 plus 1+2 & 3+4
+    sta $AUDCTL
+    sta $gAUDCTL
+
+# and go!
+
+    lda. 64
+    sta $NMIEN
+
+L loop
+    jmp $loop
+
+#---------
+
+L nmi
+    pha
+    txa
+    pha
+    tya
+    pha
+
+    jsr $play_etc
+
+    pla
+    tay
+    pla
+    tax
+    pla
+    rti
+
+L play_etc
+    lda $shadow_AUDC1
+    ldx $shadow_AUDC2
+    sta $AUDC1
+    stx $AUDC2
+
+    lda $shadow_AUDF1
+    ldx $shadow_AUDF2
+    sta $AUDF1
+    stx $AUDF2
+
+    lda $shadow_AUDC3
+    ldx $shadow_AUDC4
+    sta $AUDC3
+    test "$MID_ONESIDE" = "0" && sta $gAUDC3
+    stx $AUDC4
+    test "$MID_ONESIDE" = "0" && stx $gAUDC4
+
+    lda $shadow_AUDF3
+    ldx $shadow_AUDF4
+    sta $AUDF3
+    test "$MID_ONESIDE" = "0" && sta $gAUDF3
+    stx $AUDF4
+    test "$MID_ONESIDE" = "0" && stx $gAUDF4
+
+    lda $shadow_gAUDC1
+    ldx $shadow_gAUDC2
+    sta $gAUDC1
+    stx $gAUDC2
+
+    lda $shadow_gAUDF1
+    ldx $shadow_gAUDF2
+    sta $gAUDF1
+    stx $gAUDF2
+
+    jsr $player_play
+
+    extract_adsr_values 1
+    extract_adsr_values 2
+    extract_adsr_values 3
+
+    jsr $do_envelope_1
+    jsr $do_envelope_2
+    jsr $do_envelope_3
+
+# convert stuff and play
+
+    lda $ONPOKEY1_fhi
+    cmp. 0x16
+    bcs $V1check_next1
+
+    frqzp $ONPOKEY1_flo
+    rolzp               # mul2
+    addzp $tab16
+
+    jmp $V1setf
+
+L V1check_next1
+    cmp. 0x1f
+    bcs $V1check_next2
+
+    frqzp $ONPOKEY1_flo
+    subzp 0x1600
+    rorzp               # div2
+    rolzp               # mul2
+    addzp $tab15
+
+    jmp $V1setf
+
+L V1check_next2
+    cmp. 0x2b
+    bcs $V1check_next3
+
+    frqzp $ONPOKEY1_flo
+    subzp 0x1f00
+    rorzp               # div4
+    rorzp
+    rolzp               # mul2
+    addzp $tab14
+
+    jmp $V1setf
+
+L V1check_next3
+    cmp. 0x3d
+    bcs $V1check_next4
+
+    frqzp $ONPOKEY1_flo
+    subzp 0x2b00
+    rorzp               # div8
+    rorzp
+    rorzp
+    rolzp               # mul2
+    addzp $tab13
+
+    jmp $V1setf
+
+L V1check_next4
+    cmp. 0x56
+    bcs $V1check_next5
+
+    frqzp $ONPOKEY1_flo
+    subzp 0x3d00
+    rorzp               # div16
+    rorzp
+    rorzp
+    rorzp
+    rolzp               # mul2
+    addzp $tab12
+
+    jmp $V1setf
+
+L V1check_next5
+    cmp. 0x7a
+    bcs $V1check_next6
+
+    frqzp $ONPOKEY1_flo
+    subzp 0x5600
+    rorzp               # div32
+    rorzp
+    rorzp
+    rorzp
+    rorzp
+    rolzp               # mul2
+    addzp $tab11
+
+    jmp $V1setf
+
+L V1check_next6
+    cmp. 0xac
+    bcs $V1check_next7
+
+    frqzp $ONPOKEY1_flo
+    subzp 0x7a00
+    rorzp               # div64
+    rorzp
+    rorzp
+    rorzp
+    rorzp
+    rorzp
+    rolzp               # mul2
+    addzp $tab10
+
+    jmp $V1setf
+
+L V1check_next7
+    frqzp $ONPOKEY1_flo
+    subzp 0xac00
+    rorzp               # div128
+    rorzp
+    rorzp
+    rorzp
+    rorzp
+    rorzp
+    rorzp
+    rolzp               # mul2
+    addzp $tab09
+
+L V1setf
+    ldy. 0
+    lda.i [$zp],y
+    sta $shadow_AUDF1
+    iny
+    lda.i [$zp],y
+    sta $shadow_AUDF2
+
+#---
+#
+    bit $ONPOKEY1_ctrl
+    bpl $V1pure
+
+# div by 16 (noise)
+
+    lda $shadow_AUDF1
+    lsr.a
+    lsr.a
+    lsr.a
+    lsr.a
+    sta $shadow_AUDF1
+    lda $shadow_AUDF2
+    tax
+    lsr.a
+    lsr.a
+    lsr.a
+    lsr.a
+    sta $shadow_AUDF2
+    txa
+    asl.a
+    asl.a
+    asl.a
+    asl.a
+    ora $shadow_AUDF1
+    sta $shadow_AUDF1
+
+    lda.z $ONPOKEY1_v
+    ora. 0x80
+    bne $V1cont
+
+L V1pure
+    lda.z $ONPOKEY1_v
+    ora. 0xa0
+
+L V1cont
+    sta $shadow_AUDC2
+
+########
+
+    lda $ONBOTH_fhi
+    cmp. 0x16
+    bcs $V2check_next1
+
+    frqzp $ONBOTH_flo
+    rolzp               # mul2
+    addzp $tab16
+
+    jmp $V2setf
+
+L V2check_next1
+    cmp. 0x1f
+    bcs $V2check_next2
+
+    frqzp $ONBOTH_flo
+    subzp 0x1600
+    rorzp               # div2
+    rolzp               # mul2
+    addzp $tab15
+
+    jmp $V2setf
+
+L V2check_next2
+    cmp. 0x2b
+    bcs $V2check_next3
+
+    frqzp $ONBOTH_flo
+    subzp 0x1f00
+    rorzp               # div4
+    rorzp
+    rolzp               # mul2
+    addzp $tab14
+
+    jmp $V2setf
+
+L V2check_next3
+    cmp. 0x3d
+    bcs $V2check_next4
+
+    frqzp $ONBOTH_flo
+    subzp 0x2b00
+    rorzp               # div8
+    rorzp
+    rorzp
+    rolzp               # mul2
+    addzp $tab13
+
+    jmp $V2setf
+
+L V2check_next4
+    cmp. 0x56
+    bcs $V2check_next5
+
+    frqzp $ONBOTH_flo
+    subzp 0x3d00
+    rorzp               # div16
+    rorzp
+    rorzp
+    rorzp
+    rolzp               # mul2
+    addzp $tab12
+
+    jmp $V2setf
+
+L V2check_next5
+    cmp. 0x7a
+    bcs $V2check_next6
+
+    frqzp $ONBOTH_flo
+    subzp 0x5600
+    rorzp               # div32
+    rorzp
+    rorzp
+    rorzp
+    rorzp
+    rolzp               # mul2
+    addzp $tab11
+
+    jmp $V2setf
+
+L V2check_next6
+    cmp. 0xac
+    bcs $V2check_next7
+
+    frqzp $ONBOTH_flo
+    subzp 0x7a00
+    rorzp               # div64
+    rorzp
+    rorzp
+    rorzp
+    rorzp
+    rorzp
+    rolzp               # mul2
+    addzp $tab10
+
+    jmp $V2setf
+
+L V2check_next7
+    frqzp $ONBOTH_flo
+    subzp 0xac00
+    rorzp               # div128
+    rorzp
+    rorzp
+    rorzp
+    rorzp
+    rorzp
+    rorzp
+    rolzp               # mul2
+    addzp $tab09
+
+L V2setf
+    ldy. 0
+    lda.i [$zp],y
+    sta $shadow_AUDF3
+    sta $shadow_gAUDF3
+    iny
+    lda.i [$zp],y
+    sta $shadow_AUDF4
+    sta $shadow_gAUDF4
+
+#---
+#
+    bit $ONBOTH_ctrl
+    bpl $V2pure
+
+# div by 16
+
+    lda $shadow_gAUDF3
+    lsr.a
+    lsr.a
+    lsr.a
+    lsr.a
+    sta $shadow_gAUDF3
+    lda $shadow_gAUDF4
+    tax
+    lsr.a
+    lsr.a
+    lsr.a
+    lsr.a
+    sta $shadow_gAUDF4
+    sta $shadow_AUDF4
+    txa
+    asl.a
+    asl.a
+    asl.a
+    asl.a
+    ora $shadow_gAUDF3
+    sta $shadow_gAUDF3
+    sta $shadow_AUDF3
+
+    lda.z $ONBOTH_v
+    test "$MID_HALF_VOLUME" = "1" && lsr.a
+    ora. 0x80
+    bne $V2cont
+
+L V2pure
+    lda.z $ONBOTH_v
+    test "$MID_HALF_VOLUME" = "1" && lsr.a
+    ora. 0xa0
+
+L V2cont
+    sta $shadow_AUDC4
+    sta $shadow_gAUDC4
+
+########
+
+    lda $ONPOKEY2_fhi
+    cmp. 0x16
+    bcs $V3check_next1
+
+    frqzp $ONPOKEY2_flo
+    rolzp               # mul2
+    addzp $tab16
+
+    jmp $V3setf
+
+L V3check_next1
+    cmp. 0x1f
+    bcs $V3check_next2
+
+    frqzp $ONPOKEY2_flo
+    subzp 0x1600
+    rorzp               # div2
+    rolzp               # mul2
+    addzp $tab15
+
+    jmp $V3setf
+
+L V3check_next2
+    cmp. 0x2b
+    bcs $V3check_next3
+
+    frqzp $ONPOKEY2_flo
+    subzp 0x1f00
+    rorzp               # div4
+    rorzp
+    rolzp               # mul2
+    addzp $tab14
+
+    jmp $V3setf
+
+L V3check_next3
+    cmp. 0x3d
+    bcs $V3check_next4
+
+    frqzp $ONPOKEY2_flo
+    subzp 0x2b00
+    rorzp               # div8
+    rorzp
+    rorzp
+    rolzp               # mul2
+    addzp $tab13
+
+    jmp $V3setf
+
+L V3check_next4
+    cmp. 0x56
+    bcs $V3check_next5
+
+    frqzp $ONPOKEY2_flo
+    subzp 0x3d00
+    rorzp               # div16
+    rorzp
+    rorzp
+    rorzp
+    rolzp               # mul2
+    addzp $tab12
+
+    jmp $V3setf
+
+L V3check_next5
+    cmp. 0x7a
+    bcs $V3check_next6
+
+    frqzp $ONPOKEY2_flo
+    subzp 0x5600
+    rorzp               # div32
+    rorzp
+    rorzp
+    rorzp
+    rorzp
+    rolzp               # mul2
+    addzp $tab11
+
+    jmp $V3setf
+
+L V3check_next6
+    cmp. 0xac
+    bcs $V3check_next7
+
+    frqzp $ONPOKEY2_flo
+    subzp 0x7a00
+    rorzp               # div64
+    rorzp
+    rorzp
+    rorzp
+    rorzp
+    rorzp
+    rolzp               # mul2
+    addzp $tab10
+
+    jmp $V3setf
+
+L V3check_next7
+    frqzp $ONPOKEY2_flo
+    subzp 0xac00
+    rorzp               # div128
+    rorzp
+    rorzp
+    rorzp
+    rorzp
+    rorzp
+    rorzp
+    rolzp               # mul2
+    addzp $tab09
+
+L V3setf
+    ldy. 0
+    lda.i [$zp],y
+    sta $shadow_gAUDF1
+    iny
+    lda.i [$zp],y
+    sta $shadow_gAUDF2
+
+#---
+#
+    bit $ONPOKEY2_ctrl
+    bpl $V3pure
+
+# div by 16
+
+    lda $shadow_gAUDF1
+    lsr.a
+    lsr.a
+    lsr.a
+    lsr.a
+    sta $shadow_gAUDF1
+    lda $shadow_gAUDF2
+    tax
+    lsr.a
+    lsr.a
+    lsr.a
+    lsr.a
+    sta $shadow_gAUDF2
+    txa
+    asl.a
+    asl.a
+    asl.a
+    asl.a
+    ora $shadow_gAUDF1
+    sta $shadow_gAUDF1
+
+    lda.z $ONPOKEY2_v
+    ora. 0x80
+    bne $V3cont
+
+L V3pure
+    lda.z $ONPOKEY2_v
+    ora. 0xa0
+
+L V3cont
+    sta $shadow_gAUDC2
+
+######cybernoid 2 hack############
+## mmm, does not really hurt other songs
+    lda $ONPOKEY2_ctrl
+    cmp. 0x16
+    beq $cybernoid2hack
+    cmp. 0x17
+    bne $nocybernoid2hack
+
+L cybernoid2hack
+    lda. 0
+    sta $shadow_gAUDC2
+
+L nocybernoid2hack
+######cybernoid 2 hack############
+
+# TODO some tunes need this
+#    check_test_bit 1
+#    check_test_bit 2
+#    check_test_bit 3
+
+    jsr $do_envelope_1
+    jsr $do_envelope_2
+    jsr $do_envelope_3
+
+    rts
+
+    do_envelope 1
+    do_envelope 2
+    do_envelope 3
+
+adsr_regs() {
+    eval L s${1}_attack
+    .word 0
+    eval L s${1}_decay
+    .word 0
+    eval L s${1}_sustain
+    .byte 0
+    eval L s${1}_release
+    .word 0
+    eval L s${1}_envphase
+    .byte 3
+    eval L s${1}_enval
+    .word 0x0040
+    eval L s${1}_gate
+    .byte 0
+    eval L s${1}_test
+    .byte 0
+}
+
+    adsr_regs 1
+    adsr_regs 2
+    adsr_regs 3
+
+pokey_shadow_regs() {
+    eval L shadow_AUDC$1
+    .byte 0
+    eval L shadow_AUDF$1
+    .byte 0
+    eval L shadow_gAUDC$1
+    .byte 0
+    eval L shadow_gAUDF$1
+    .byte 0
+}
+
+    pokey_shadow_regs 1
+    pokey_shadow_regs 2
+    pokey_shadow_regs 3
+    pokey_shadow_regs 4
+
+###################################################################
+
+L main2
+    sei
+    lda. 0
+    sta $IRQEN
+    sta $NMIEN
+    sta $NMIRES
+
+    lda. `lsb $dlst2`
+    sta 0xd402
+    lda. `msb $dlst2`
+    sta 0xd403
+
+    lda. 34
+    sta $DMACTL
+
+    lda. 15
+    sta 0xd017
+    lda. 0
+    sta 0xd018
+
+    jmp $main
+
+# RUN ADDRESS -----------------------------------------------------------------
+
+    .org 0x02e0
+    .word $main2
+ 

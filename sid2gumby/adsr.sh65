@@ -1,0 +1,251 @@
+# ADSR
+
+repeat() {
+    while test -n "$1" ; do
+        yes "$1" | head -n $2 | tr '\n' ' '
+        shift 2
+    done
+}
+
+do_envelope() {
+    eval L do_envelope_$1
+
+    # if gate, set phase to 3, if !gate and phase==3, set to 0
+
+    eval lda \$s${1}_gate
+    eval bne \$gate_is_on_$1
+
+    lda. 3
+    eval sta \$s${1}_envphase
+    eval bne \$do_phases_$1
+
+    eval L gate_is_on_$1
+
+    eval lda \$s${1}_envphase
+    cmp. 3
+    eval bne \$do_phases_$1
+    lda. 0
+    eval sta \$s${1}_envphase
+    eval sta \$s${1}_enval
+    eval sta \$\(\(\$s${1}_enval + 1\)\)
+
+    eval L do_phases_$1
+
+    # "switch" statement
+
+    eval lda \$s${1}_envphase
+    cmp. 3
+    eval bne \$not_case3_$1
+    eval jmp \$case3_$1
+
+    eval L not_case3_$1
+    cmp. 2
+    eval bne \$not_case2_$1
+    eval jmp \$case2_$1
+
+    eval L not_case2_$1
+    cmp. 1
+    eval bne \$case0_$1
+    eval jmp \$case1_$1
+
+# Case 0
+    eval L case0_$1
+
+    clc
+    eval lda \$s${1}_enval
+    eval adc \$s${1}_attack
+    eval sta \$s${1}_enval
+    eval lda \$\(\(\$s${1}_enval + 1\)\)
+    eval adc \$\(\(\$s${1}_attack + 1\)\)
+    eval sta \$\(\(\$s${1}_enval + 1\)\)
+
+    cmp. 0x0f
+    eval bcs \$fix$1
+
+    lda. 0x0f
+
+    eval L fix$1
+    tax
+    lda $phase0,x
+    eval sta \$s${1}_envphase
+
+    eval jmp \$copy_to_volume_$1
+
+# Case 1
+    eval L case1_$1
+
+    sec
+    eval lda \$s${1}_enval
+    eval sbc \$s${1}_decay
+    eval sta \$s${1}_enval
+    eval lda \$\(\(\$s${1}_enval + 1\)\)
+    eval sbc \$\(\(\$s${1}_decay + 1\)\)
+    eval sta \$\(\(\$s${1}_enval + 1\)\)
+
+    and. 15
+    asl.a
+    asl.a
+    asl.a
+    asl.a
+    eval ora \$s${1}_sustain
+    tax
+    lda $envsuslut,x
+    eval sta \$\(\(\$s${1}_enval + 1\)\)
+    lda $phase1,x
+    eval sta \$s${1}_envphase
+
+    eval jmp \$copy_to_volume_$1
+
+# Case 2
+    eval L case2_$1
+
+    eval lda \$\(\(\$s${1}_enval + 1\)\)
+    eval eor \$s${1}_sustain
+    tax
+    lda $phase2,x
+    eval sta \$s${1}_envphase
+
+    eval jmp \$copy_to_volume_$1
+
+# Case 3
+    eval L case3_$1
+
+    sec
+    eval lda \$s${1}_enval
+    eval sbc \$s${1}_release
+    eval sta \$s${1}_enval
+    eval lda \$\(\(\$s${1}_enval + 1\)\)
+    eval sbc \$\(\(\$s${1}_release + 1\)\)
+    eval sta \$\(\(\$s${1}_enval + 1\)\)
+
+    eval bpl \$copy_to_volume_$1
+
+    lda. 0x40
+    eval sta \$s${1}_enval
+    lda. 0x00
+    eval sta \$\(\(\$s${1}_enval + 1\)\)
+
+    eval L copy_to_volume_$1
+ 
+    eval lda \$\(\(\$s${1}_enval + 1\)\)
+#    lsr.a
+#    lsr.a
+    eval sta \$volume_v$1
+
+    rts
+}
+
+extract_adsr_values() {
+    eval lda \$SIDV${1}AD
+    tax
+    lsr.a
+    lsr.a
+    lsr.a
+    lsr.a
+    asl.a
+    tax
+    lda $attacks,x
+    eval sta \$s${1}_attack
+    inx
+    lda $attacks,x
+    eval sta \$\(\(\$s${1}_attack +1\)\)
+
+    txa
+    and. 0x0f
+    asl.a
+    tax
+    lda $releases,x
+    eval sta \$s${1}_decay
+    inx
+    lda $releases,x
+    eval sta \$\(\(\$s${1}_decay +1\)\)
+
+    eval lda \$SIDV${1}SR
+    tax
+    lsr.a
+    lsr.a
+    lsr.a
+    lsr.a
+    eval sta \$s${1}_sustain
+    txa
+    and. 0x0f
+    asl.a
+    tax
+    lda $releases,x
+    eval sta \$s${1}_release
+    inx
+    lda $releases,x
+    eval sta \$\(\(\$s${1}_release +1\)\)
+
+    eval lda \$SIDV${1}CTRL
+    tax
+    and. 1
+    eval sta \$s${1}_gate
+    txa
+    and. 8
+    eval sta \$s${1}_test
+}
+
+#check_test_bit() {
+#    eval lda \$s${1}_test
+#    eval beq \$no_reset_$1
+#
+#    lda. 0
+#    eval sta \$shadow_freq_lsb_v${1}
+#    eval sta \$shadow_freq_msb_v${1}
+#
+#    eval L no_reset_$1
+#}
+
+L phase0
+    .byte $(repeat 0 15) 1
+
+L phase1
+    .byte $(repeat 2 16)
+    .byte $(repeat 1  1) $(repeat 2 15)
+    .byte $(repeat 1  2) $(repeat 2 14)
+    .byte $(repeat 1  3) $(repeat 2 13)
+    .byte $(repeat 1  4) $(repeat 2 12)
+    .byte $(repeat 1  5) $(repeat 2 11)
+    .byte $(repeat 1  6) $(repeat 2 10)
+    .byte $(repeat 1  7) $(repeat 2  9)
+    .byte $(repeat 1  8) $(repeat 2  8)
+    .byte $(repeat 1  9) $(repeat 2  7)
+    .byte $(repeat 1 10) $(repeat 2  6)
+    .byte $(repeat 1 11) $(repeat 2  5)
+    .byte $(repeat 1 12) $(repeat 2  4)
+    .byte $(repeat 1 13) $(repeat 2  3)
+    .byte $(repeat 1 14) $(repeat 2  2)
+    .byte $(repeat 1 15) $(repeat 2  1)
+
+L phase2
+    .byte 2 $(repeat 1 15)
+
+L phase3
+    .byte 0 $(repeat 2 15)
+
+L attacks
+    .word 0x0f00 0x0f00 0x0960 0x0640 0x03f2 0x02ad 0x0234 0x01e0
+    .word 0x0180 0x0099 0x004c 0x0030 0x0026 0x000c 0x0007 0x0004
+
+L releases
+    .word 0x0f00 0x0640 0x0320 0x0215 0x0150 0x00e4 0x00bc 0x00a0
+    .word 0x0080 0x0033 0x0019 0x0010 0x000c 0x0004 0x0002 0x0001
+
+L envsuslut
+    .byte  0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
+    .byte  1  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
+    .byte  2  2  2  3  4  5  6  7  8  9 10 11 12 13 14 15
+    .byte  3  3  3  3  4  5  6  7  8  9 10 11 12 13 14 15
+    .byte  4  4  4  4  4  5  6  7  8  9 10 11 12 13 14 15
+    .byte  5  5  5  5  5  5  6  7  8  9 10 11 12 13 14 15
+    .byte  6  6  6  6  6  6  6  7  8  9 10 11 12 13 14 15
+    .byte  7  7  7  7  7  7  7  7  8  9 10 11 12 13 14 15
+    .byte  8  8  8  8  8  8  8  8  8  9 10 11 12 13 14 15
+    .byte  9  9  9  9  9  9  9  9  9  9 10 11 12 13 14 15
+    .byte 10 10 10 10 10 10 10 10 10 10 10 11 12 13 14 15
+    .byte 11 11 11 11 11 11 11 11 11 11 11 11 12 13 14 15
+    .byte 12 12 12 12 12 12 12 12 12 12 12 12 12 13 14 15
+    .byte 13 13 13 13 13 13 13 13 13 13 13 13 13 13 14 15
+    .byte 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 15
+    .byte 15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 15
