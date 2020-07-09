@@ -28,18 +28,21 @@ EMUSWITCHES = \
 
 C_SOURCES = \
 	sid2pokey.c \
+#	fonts.c \
 
+OPTFLAGS = -Oi
 
-ASM_SOURCES =
+ASM_SOURCES = \
+	sp-common.asm \
 
 
 all: $(TARGET)
 
 $(TARGET): sid2pokey.c
-	$(CL) -Oi -t $(MACH) -D$(DEFINES) $(C_SOURCES) $(ASM_SOURCES) -o $(TARGETFILENAME)
+	$(CL) $(OPTFLAGS) -t $(MACH) -D$(DEFINES) $(C_SOURCES) $(ASM_SOURCES) -o $(TARGETFILENAME)
 
 build: $(TARGET)
-	$(EMULATOR) $(EMUSWITCHES)
+	$(EMULATOR) $(EMUSWITCHES) -basic
 
 atr: $(TARGET)
 	cp $(TARGETFILENAME) $(ATRFOLDER)/build/mypdos-406.ar0
