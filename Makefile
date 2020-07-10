@@ -42,7 +42,7 @@ $(TARGET): sid2pokey.c
 	$(CL) $(OPTFLAGS) -t $(MACH) -D$(DEFINES) $(C_SOURCES) $(ASM_SOURCES) -o $(TARGETFILENAME)
 
 build: $(TARGET)
-	$(EMULATOR) $(EMUSWITCHES) -basic
+	$(EMULATOR) $(EMUSWITCHES)
 
 atr: $(TARGET)
 	cp $(TARGETFILENAME) $(ATRFOLDER)/build/mypdos-406.ar0
