@@ -13,6 +13,7 @@ DEFINES ?= RETROBIT
 ifeq ($(MACH),atari)
 	ROM = ~/ATARI/ATARIOSB.ROM
 	ROMSWITCH = -osb_rom
+	MACHINE =
 	DEFINES += -DATARI800 \
 	
 endif
