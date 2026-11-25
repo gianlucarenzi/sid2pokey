@@ -4,12 +4,17 @@
  * Header-only, no timing: it only needs to execute INIT/PLAY routines of
  * a PSID file and let the caller observe the writes to the SID registers.
  *
- * Supported: all official opcodes (binary + decimal mode ADC/SBC) and the
- * common undocumented ones used by SID players (LAX, SAX, SLO, RLA, SRE,
- * RRA, DCP, ISC, ANC, ALR, SBX, multi-byte NOPs).
- * Not supported (cpu_step() returns -1 and sets cpu->bad_op): JAM opcodes
- * and the "unstable" undocumented ones (XAA, LXA, AHX, TAS, SHX, SHY, LAS,
- * ARR).
+ * Supported: all official opcodes (binary + decimal mode ADC/SBC) and every
+ * undocumented one except JAM: LAX, SAX, SLO, RLA, SRE, RRA, DCP, ISC, ANC,
+ * ALR, SBX, multi-byte NOPs, and the ones that are "unstable" on real chips
+ * (ARR, XAA, LXA, AHX, TAS, SHX, SHY, LAS), modelled as VICE and sidplay do:
+ * XAA uses the magic constant $EF and LXA $EE (as VICE x64sc does; real chips
+ * differ), and the stores of AHX/TAS/SHX/SHY
+ * AND with the high byte of the address + 1 and, when the indexed address
+ * crosses a page, use that value as the high byte of the address.
+ * The 12 JAM opcodes (the real CPU hangs) make cpu_step() return -1 and set
+ * cpu->bad_op, see cpu_is_jam().  This core runs on the host only; the Atari
+ * never executes any of this.
  */
 #ifndef CPU6502_H
 #define CPU6502_H
@@ -153,6 +158,47 @@ static void cpu_sbc(cpu6502_t *c, uint8_t m)
 	}
 }
 
+/* ARR #imm: A = (A & imm) ROR 1, with its own flags (and BCD fix-up). */
+static void cpu_arr(cpu6502_t *c, uint8_t imm)
+{
+	uint8_t t = c->a & imm;
+	uint8_t r = (uint8_t)((t >> 1) | (c->c << 7));
+
+	if (c->d) {
+		c->n = c->c;
+		c->z = (r == 0);
+		c->v = ((r ^ t) & 0x40) != 0;
+		if ((t & 0x0F) + (t & 0x01) > 5)
+			r = (uint8_t)((r & 0xF0) | ((r + 6) & 0x0F));
+		if ((t & 0xF0) + (t & 0x10) > 0x50) {
+			r = (uint8_t)(r + 0x60);
+			c->c = 1;
+		} else {
+			c->c = 0;
+		}
+	} else {
+		cpu_nz(c, r);
+		c->c = (r >> 6) & 1;
+		c->v = ((r >> 6) ^ (r >> 5)) & 1;
+	}
+	c->a = r;
+}
+
+/*
+ * AHX / TAS / SHX / SHY: store (reg & (high byte of base + 1)) at base + idx;
+ * when adding idx crosses a page, the stored value also becomes the high byte
+ * of the address.
+ */
+static void cpu_sh_store(cpu6502_t *c, uint16_t base, uint8_t idx, uint8_t reg)
+{
+	uint16_t ea = (uint16_t)(base + idx);
+	uint8_t v = reg & (uint8_t)((base >> 8) + 1);
+
+	if ((base ^ ea) & 0xFF00)
+		ea = (uint16_t)(v << 8 | (ea & 0xFF));
+	CWR(ea, v);
+}
+
 static void cpu_cmp(cpu6502_t *c, uint8_t r, uint8_t m)
 {
 	c->c = (r >= m);
@@ -220,6 +266,13 @@ static void cpu_branch(cpu6502_t *c, int cond)
 	int8_t off = (int8_t)cpu_fetch(c);
 	if (cond)
 		c->pc = (uint16_t)(c->pc + off);
+}
+
+/* The opcodes that freeze a real NMOS 6502 (they are not implemented). */
+static int cpu_is_jam(uint8_t op)
+{
+	return (op & 0x0F) == 2 &&
+	       op != 0x82 && op != 0xA2 && op != 0xC2 && op != 0xE2;
 }
 
 static void cpu_reset_state(cpu6502_t *c)
@@ -469,6 +522,41 @@ static int cpu_step(cpu6502_t *c)
 		c->c = ((c->a & c->x) >= m);
 		c->x = (uint8_t)t;
 		cpu_nz(c, c->x);
+		break;
+	/* --- the "unstable" ones --- */
+	case 0x6B:			/* ARR */
+		cpu_arr(c, CRD(cpu_ea(c, M_IMM)));
+		break;
+	case 0x8B:			/* XAA (ANE) */
+		c->a = (c->a | 0xEF) & c->x & CRD(cpu_ea(c, M_IMM));
+		cpu_nz(c, c->a);
+		break;
+	case 0xAB:			/* LXA */
+		c->a = c->x = (c->a | 0xEE) & CRD(cpu_ea(c, M_IMM));
+		cpu_nz(c, c->a);
+		break;
+	case 0x93: {			/* AHX (zp),Y */
+		uint8_t zp = cpu_fetch(c);
+		uint16_t lo = CRD(zp), hi = CRD((uint8_t)(zp + 1));
+		cpu_sh_store(c, (uint16_t)(lo | hi << 8), c->y, c->a & c->x);
+		break;
+	}
+	case 0x9F:			/* AHX abs,Y */
+		cpu_sh_store(c, cpu_fetch16(c), c->y, c->a & c->x);
+		break;
+	case 0x9B:			/* TAS abs,Y */
+		c->sp = c->a & c->x;
+		cpu_sh_store(c, cpu_fetch16(c), c->y, c->sp);
+		break;
+	case 0x9E:			/* SHX abs,Y */
+		cpu_sh_store(c, cpu_fetch16(c), c->y, c->x);
+		break;
+	case 0x9C:			/* SHY abs,X */
+		cpu_sh_store(c, cpu_fetch16(c), c->x, c->y);
+		break;
+	case 0xBB:			/* LAS abs,Y */
+		c->a = c->x = c->sp = CRD(cpu_ea(c, M_ABY)) & c->sp;
+		cpu_nz(c, c->a);
 		break;
 	default:
 		if ((op & 3) == 3) {

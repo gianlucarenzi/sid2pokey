@@ -36,6 +36,18 @@ On the Atari, a key press stops the tune and the next one plays it again from th
 start; the program never returns to DOS (without a DOS the XL/XE would end in a
 page of `BOOT ERROR`).
 
+### Which Atari
+
+The Atari side only uses documented 6502 instructions (it is assembled and compiled
+for the plain NMOS 6502: no 65C02 instructions and no undocumented opcodes), so it
+runs the same on the 400/800 and on the XL/XE.  They all have the same 6502C, and the
+XL/XE do not add opcodes (those belong to the 65C02/65816 of accelerator boards, which
+this project does not use).  What differs is the system: `make MACH=atari` builds for
+a 400/800 with 48 KB and the OS ROM, the default `make` (`atarixl`) for an XL/XE,
+where cc65 banks the OS ROM out.  The 6502 core in `tools/` runs on the PC only, to
+execute the SID tune while converting; its undocumented opcodes have nothing to do
+with the Atari.
+
 ## Current mapping
 
 The three SID voices are laid out on the four POKEY channels in whichever way
@@ -101,7 +113,7 @@ does the work, C64 BASIC tunes (`init` = 0), multispeed above 4x (resampled to 4
 filter, ring modulation, sync, pulse width, sampled digi
 (`$D418`), a third SID, loop-point detection, using the second POKEY to improve
 single SID tunes (a 16 bit pair for every voice), calls to KERNAL routines
-other than the interrupt exits, a few unstable undocumented 6502 opcodes.  A
+other than the interrupt exits, the 12 JAM opcodes (they hang a real CPU).  A
 conversion that comes out silent is reported with a warning.
 
 ## Stream and player
@@ -134,10 +146,11 @@ raw values with a 512 window were the smallest, so no delta arithmetic is needed
 - The divider formulas were checked against the emulator's audio: synthetic
   tones (16 bit pair at 110 Hz and 55 Hz, 8 bit at 64 kHz and 15 kHz) recorded
   to WAV peak within 0.3 cents of the computed frequency.
-- On a sample of 4370 HVSC tunes (every 12th file of `MUSICIANS`), 4289 (98%)
-  convert without errors, 40 of them silent (mostly sampled digi); the 81 refused
-  are 28 NMI driven, 26 main-loop driven, 19 BASIC, 8 other.  Before the IRQ
-  support the same sample converted 4137 (94.7%).
+- On a sample of 4370 HVSC tunes (every 12th file of `MUSICIANS`), 4292 (98%)
+  convert without errors, some of them silent (mostly sampled digi); the 78 refused
+  are 28 NMI driven, 26 main-loop driven, 19 BASIC, 2 that call the KERNAL, 2 that
+  never return and 1 JAM.  Before the IRQ support the same sample converted 4137
+  (94.7%).
 - IRQ driven tunes (First Strike, CBM64-2, 1200 A.D., Caverns of Eriban) give
   sequences of real notes.
 - Multispeed in atari800 (POKEY recorder sampling several times per frame),
@@ -157,10 +170,16 @@ raw values with a 512 window were the smallest, so no delta arithmetic is needed
   layouts on the two chips, on the Atari 800 and the XE; stop / play again silences
   both POKEYs and restarts from the first record.  Without `-stereo` the first
   POKEY gets exactly SID 1 and keeps its `AUDCTL`.
-- All 264 HVSC files with a second SID: 260 convert, the second SID is audible in
-  258 of those (all address types); the other 4 hit existing limits (a KERNAL
-  call, an unsupported opcode, a main loop).  The 4370-tune sample gives the same
-  counts as before.
+- All 264 HVSC files with a second SID: 261 convert (the second SID was audible in
+  258 of the first 260 checked, with every address type); the other 3 hit existing
+  limits (two never return, one is driven by a main loop).
+- The 6502 core of the converter is checked against VICE x64sc 3.10, undocumented
+  opcodes included: `sh tests/opcodes/run.sh` runs 588 cases of ARR (also in decimal
+  mode), XAA, LXA, AHX, TAS, SHX, SHY and LAS (registers, flags, stack pointer, the
+  page-crossing behaviour of the stores) and compares each result with the reference
+  recorded from VICE: all identical.  The magic constants of XAA (`$EF`) and LXA
+  (`$EE`) are VICE's; on real chips they vary.  Three tunes of the sample (AHX, ARR,
+  LXA) were refused before.
 - Compression, 31 tunes of 45 s: 238 KB in the previous mask/delta format, 38 KB
   now (6.2x smaller; per tune from 3.8x to 13.3x, median 6.7x; 60 s of Commando
   take 2 KB, 60 s of the 4x tune 3.5 KB).

@@ -291,9 +291,19 @@ static int run_to_trap(cpu6502_t *cpu, uint16_t entry, long max_steps,
 		if (cpu->pc == TRAP_ADDR)
 			return 0;
 		if (cpu_step(cpu) < 0) {
-			fprintf(stderr,
-				"sidconv: unsupported opcode $%02X at $%04X\n",
-				cpu->bad_op, cpu->bad_pc);
+			if (cpu->bad_op == 0x02 && cpu->bad_pc >= 0xE000 &&
+			    (((machine_t *)cpu->ctx)->mem[1] & 2))
+				fprintf(stderr, "sidconv: the tune calls the KERNAL at "
+					"$%04X, which is not emulated (only the interrupt "
+					"exits are)\n", cpu->bad_pc);
+			else if (cpu_is_jam(cpu->bad_op))
+				fprintf(stderr, "sidconv: JAM opcode $%02X at $%04X "
+					"(the real CPU would hang)\n",
+					cpu->bad_op, cpu->bad_pc);
+			else
+				fprintf(stderr,
+					"sidconv: unsupported opcode $%02X at $%04X\n",
+					cpu->bad_op, cpu->bad_pc);
 			return -1;
 		}
 	}
