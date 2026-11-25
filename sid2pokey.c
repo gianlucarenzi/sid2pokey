@@ -3,7 +3,6 @@
  * the tune and a VU meter for every SID voice.  The music itself is played by
  * the interrupt code in sp-common.asm; this program only draws.
  */
-#include <conio.h>
 #include <string.h>
 
 /* sp-common.asm: POKEY player running in the deferred vertical blank */
@@ -43,6 +42,9 @@ extern unsigned char font_end[];
 #define COLOR2	(*(unsigned char *) 0x02C6)	/* background */
 #define COLOR4	(*(unsigned char *) 0x02C8)	/* border */
 #define CHBAS	(*(unsigned char *) 0x02F4)	/* character set page (shadow) */
+#define CRSINH	(*(unsigned char *) 0x02F0)	/* 1 = no cursor */
+#define CH	(*(volatile unsigned char *) 0x02FC)	/* last key pressed, $FF = none */
+#define SKSTAT	(*(volatile unsigned char *) 0xD20F)	/* POKEY: bit 2 clear = a key is down */
 #define SDLSTL	(*(unsigned *) 0x0230)	/* OS shadow of the display list pointer */
 #define PALNT	(*(unsigned char *) 0xD014)	/* GTIA: 1 on PAL, $0F on NTSC */
 
@@ -434,6 +436,25 @@ static void time_update(unsigned char hz)
 
 /* ------------------------------------------------------------------ */
 
+/*
+ * The keyboard is read from CH, the OS keeps the last key there, and not with
+ * cgetc() (nor kbhit()): cgetc() asks the screen editor, which echoes the key on
+ * the screen at the cursor (a hole in the title bar for every key) and, on the
+ * XL/XE, keeps the OS ROM on until it returns.
+ */
+static unsigned char key_pressed(void)
+{
+	return CH != 0xFF;
+}
+
+/* Take the key, after it is released (a key held down repeats). */
+static void eat_key(void)
+{
+	while (!(SKSTAT & 0x04))
+		;
+	CH = 0xFF;
+}
+
 /* One video frame; also keeps the attract mode (colour cycling) away. */
 static void wait_frame(void)
 {
@@ -451,7 +472,8 @@ int main(void)
 	unsigned char t;
 
 	install_font();
-	cursor(0);
+	CRSINH = 1;
+	CH = 0xFF;
 	COLOR4 = UI_HUE | 0x0A;		/* border: light blue */
 	COLOR2 = UI_HUE | 0x04;		/* background: dark blue */
 	COLOR1 = 0x0C;			/* text: light, same hue as the background */
@@ -471,25 +493,20 @@ int main(void)
 		if (play_k > 1)
 			patchDisplayList(play_k, ntsc);
 		startPlayer();
-		while (!kbhit()) {
+		while (!key_pressed()) {
 			wait_frame();
 			vu_update();
 			time_update(hz);
 		}
-		cgetc();
+		eat_key();
 		stopPlayer();
 		unpatchDisplayList();
 		vu_clear();
 		for (t = 0; t < nvoices; ++t)
 			draw_bar(t);
 		draw_state(0);
-		/*
-		 * Wait for the key without blocking inside cgetc(): on the XL/XE a call
-		 * to the OS switches its ROM on until it returns, and while it is on the
-		 * ANTIC reads the ROM character set instead of ours.
-		 */
-		while (!kbhit())
+		while (!key_pressed())
 			wait_frame();
-		cgetc();
+		eat_key();
 	}
 }

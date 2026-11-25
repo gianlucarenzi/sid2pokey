@@ -70,11 +70,16 @@ How the font gets to the screen depends on the machine:
   handles them, which would make the ANTIC read the ROM font for those scanlines
   (a band of the old characters across the screen); so on this target a DLI is
   served straight from the NMI vector, without the ROM.  For the same reason the
-  screen code makes no OS call that can last: a blocking `cgetc()` (the program waits
-  for the key in the stopped state) kept the ROM on and the Atari characters came
-  back until the key was pressed, so the program polls `kbhit()` and clears the
-  screen by itself instead of `clrscr()`.  The one OS call left, `cgetc()` once a key
-  is there, is short.
+  screen code makes no OS call after the start: a blocking `cgetc()` (the program
+  waits for the key in the stopped state) kept the ROM on and the Atari characters
+  came back until the key was pressed, and `clrscr()` does the same for a moment.
+  The screen is cleared by the program itself.
+- Keyboard: it is read from `CH`, where the OS leaves the last key, and not with
+  `cgetc()`: that asks the screen editor, which echoes the key on the screen at the
+  cursor, so every key punched a hole in the title bar (the key itself, in normal
+  video, over the reverse video).  The key is taken after its release, so one that
+  is held down does not stop and start the tune again.  What is left is the keyboard
+  interrupt itself, which the OS runs with the ROM on for a couple of scanlines.
 - 400/800 (`atari` target): the linker keeps 2 KB at the top of RAM free
   (`__RESERVED_MEMORY__`) and the font, which has to sit on a 1 KB boundary, goes
   in the aligned KB of that block; `CHBAS` points to it.  The OS font is copied
