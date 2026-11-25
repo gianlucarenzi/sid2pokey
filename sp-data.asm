@@ -3,6 +3,7 @@
 
 .export song_data
 .export song_end
+.export _song_data = song_data		; for C (header access)
 
 .segment "RODATA"
 

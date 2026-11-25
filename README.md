@@ -23,9 +23,15 @@ Requires cc65 and a host C compiler.  The converter alone:
     gcc -O2 -o tools/sidconv tools/sidconv.c -lm
     tools/sidconv -v -s 1 -t 60 -p pal -o song.bin tune.sid     # -d dumps the POKEY registers
     tools/sidconv -m plain|bass16 ...                           # force a channel layout (default: auto)
+    tools/sidconv -k 1 ...                                      # force 1-4 records per video frame (default: from the tune)
 
 `DURATION` is needed because a SID file has no length.  The stream must stay
-under about 40 KB (roughly 3 minutes) to fit in memory.
+under about 40 KB to fit in memory: roughly 3 minutes of an ordinary tune, but
+only about 90 seconds of a 4x one (the converter warns).
+
+On the Atari, a key press stops the tune and the next one plays it again from the
+start; the program never returns to DOS (without a DOS the XL/XE would end in a
+page of `BOOT ERROR`).
 
 ## Current mapping
 
@@ -46,6 +52,17 @@ Details:
 - The tempo follows real time: play calls are resampled to the Atari frame rate
   (PAL 49.86 Hz or NTSC 59.92 Hz).
 
+Multispeed tunes (two or more play calls per video frame, CIA timer set to
+100/150/200 Hz) get several records per frame, up to 4: the vertical blank plays
+the first one and display list interrupts play the others.  `sid2pokey.c` sets the
+DLI bit on the display list instructions closest to the points that split the
+frame in equal parts (it patches the OS display list in place and restores it on
+stop; the lines are computed for PAL or NTSC at run time).  The VBI itself turns
+the DLIs on, so that they are always in step with the frame.  Tunes faster than
+4x are resampled to 4 records per frame, so some of their play calls are dropped,
+and a rate that is not a whole multiple of the frame rate (such as a 4x PAL tune
+on an NTSC machine) is resampled too.
+
 Tunes with `play` address 0 install their own IRQ handler: sidconv emulates the
 interrupt the way a C64 delivers it (vector at `$0314` with the KERNAL visible, at
 `$FFFE` with RAM; a stub KERNAL provides the usual exits `$EA31`/`$EA34`/`$EA7B`/
@@ -53,8 +70,8 @@ interrupt the way a C64 delivers it (vector at `$0314` with the KERNAL visible, 
 raster.  If `init` never returns (main loop) the IRQ handler is still called.
 
 Not handled yet: NMI driven tunes (sampled digi players), tunes whose main loop
-does the work, C64 BASIC tunes (`init` = 0), multispeed tunes (decimated to one
-play call per frame), filter, ring modulation, sync, pulse width, sampled digi
+does the work, C64 BASIC tunes (`init` = 0), multispeed above 4x (resampled to 4),
+filter, ring modulation, sync, pulse width, sampled digi
 (`$D418`), second POKEY (stereo), loop-point detection, calls to KERNAL routines
 other than the interrupt exits, a few unstable undocumented 6502 opcodes.  A
 conversion that comes out silent is reported with a warning.
@@ -73,6 +90,13 @@ conversion that comes out silent is reported with a warning.
   support the same sample converted 4137 (94.7%).
 - IRQ driven tunes (First Strike, CBM64-2, 1200 A.D., Caverns of Eriban) give
   sequences of real notes.
+- Multispeed in atari800 (POKEY recorder sampling several times per frame),
+  PAL: 2x, 3x and 4x on the Atari 800, 2x on the XE, every record identical
+  to the converter's; the stream also loops correctly (a 3 s stream played for
+  14 s) and stop / play again works on both machines.  NTSC: 2x identical; 3x
+  and 4x checked with one sample per frame (838 frames in step).
+- Of the 4370 tunes, 199 convert with 2 or more records per frame (120 at 2x, 11
+  at 3x, 68 at 4x or faster).
 - Not checked by ear: how it actually sounds.
 
 ## Notes

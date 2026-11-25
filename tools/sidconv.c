@@ -10,14 +10,18 @@
  *
  * Output stream format (all values bytes):
  *
- *   header:  AUDCTL, video_hz (50|60), frames (16 bit little endian)
- *   frame:   mask, then one byte for each set bit of mask
+ *   header:  AUDCTL, video_hz (50|60), frames (16 bit little endian),
+ *            subframes (1..4)
+ *   record:  mask, then one byte for each set bit of mask
  *            bit n of mask -> register $D200+n:
  *              AUDF1 AUDC1 AUDF2 AUDC2 AUDF3 AUDC3 AUDF4 AUDC4
  *            registers whose bit is clear keep their previous value.
  *
- * The first frame always writes all eight registers, so the stream can be
- * looped by simply restarting from the first frame.
+ * A video frame holds `subframes` consecutive records: the player plays the
+ * first from the vertical blank and the others from display list interrupts
+ * spread evenly over the frame (multispeed tunes).  The first record always
+ * writes all eight registers, so the stream can be looped by simply
+ * restarting from the beginning.
  *
  * Current mapping (see the README for what is still missing):
  *   - The converter tries several layouts of the three SID voices on the
@@ -55,6 +59,7 @@
 #define NTSC_ATARI_HZ	(NTSC_CPU_CLK / (262.0 * 114.0))
 
 #define MAX_FRAMES	65535
+#define MAX_SUB		4		/* records per video frame */
 
 /* ------------------------------------------------------------------ */
 
@@ -603,15 +608,16 @@ static void put_voice(const config_t *cf, const clocks_t *ck, int v,
 /* ------------------------------ stream ----------------------------- */
 
 static size_t stream_encode(const uint8_t (*fr)[8], int n, uint8_t audctl,
-			    int video_hz, uint8_t *out)
+			    int video_hz, int frames, int sub, uint8_t *out)
 {
 	int last[8], i, r;
 	size_t pos = 0;
 
 	out[pos++] = audctl;
 	out[pos++] = (uint8_t)video_hz;
-	out[pos++] = (uint8_t)(n & 0xFF);
-	out[pos++] = (uint8_t)(n >> 8);
+	out[pos++] = (uint8_t)(frames & 0xFF);
+	out[pos++] = (uint8_t)(frames >> 8);
+	out[pos++] = (uint8_t)sub;
 	for (r = 0; r < 8; r++)
 		last[r] = -1;
 	for (i = 0; i < n; i++) {
@@ -635,7 +641,7 @@ static int stream_verify(const uint8_t *s, size_t len, const uint8_t (*fr)[8],
 			 int n)
 {
 	uint8_t reg[8] = { 0 };
-	size_t pos = 4;
+	size_t pos = 5;
 	int i, r;
 
 	for (i = 0; i < n; i++) {
@@ -667,6 +673,7 @@ static void usage(void)
 "  -p pal|ntsc Atari video standard of the target (default pal)\n"
 "  -c pal|ntsc|auto  clock the SID tune was written for (default auto)\n"
 "  -m auto|plain|bass16  channel layout (default auto: best pitch accuracy)\n"
+"  -k n        records per video frame, 1-4 (default: from the tune's rate)\n"
 "  -d          dump the POKEY registers of every frame\n"
 "  -v          verbose\n");
 	exit(2);
@@ -678,6 +685,9 @@ int main(int argc, char **argv)
 	int song = 0, verbose = 0, dump = 0, ntsc_target = 0;
 	int sid_clock = 0;		/* 0 auto, 1 pal, 2 ntsc */
 	int layout = 0;			/* 0 auto, 1 plain, 2 bass16 */
+	int ksub = 0;			/* records per video frame, 0 auto */
+	int nrec, j;
+	double ratio;
 	double seconds = 60.0;
 	psid_t psid;
 	machine_t *m;
@@ -719,6 +729,10 @@ int main(int argc, char **argv)
 			else if (!strcmp(a, "plain")) layout = 1;
 			else if (!strcmp(a, "bass16")) layout = 2;
 			else usage();
+		} else if (!strcmp(a, "-k") && i + 1 < argc) {
+			ksub = atoi(argv[++i]);
+			if (ksub < 1 || ksub > MAX_SUB)
+				usage();
 		} else if (!strcmp(a, "-d")) dump = 1;
 		else if (!strcmp(a, "-v")) verbose = 1;
 		else if (a[0] == '-') usage();
@@ -810,6 +824,19 @@ int main(int argc, char **argv)
 	ncalls = (int)ceil(nframes / atari_hz * play_hz) + 2;
 	call_ms = 1000.0 / play_hz;
 
+	/* multispeed: several play calls per video frame, up to MAX_SUB */
+	ratio = play_hz / atari_hz;
+	if (ksub == 0) {
+		ksub = (int)floor(ratio + 0.5);
+		if (ksub < 1)
+			ksub = 1;
+		if (ksub > MAX_SUB)
+			ksub = MAX_SUB;
+	}
+	nrec = nframes * ksub;
+	if (nrec > 4 * MAX_FRAMES)
+		die("duration too long");
+
 	if (verbose) {
 		fprintf(stderr, "title     : %s\nauthor    : %s\ncopyright : %s\n",
 			psid.title, psid.author, psid.copyright);
@@ -825,17 +852,22 @@ int main(int argc, char **argv)
 			rate_src,
 			sid_clock == 2 ? "NTSC" : "PAL", play_hz,
 			ntsc_target ? "NTSC" : "PAL", atari_hz);
-		if (play_hz > atari_hz * 1.5)
-			fprintf(stderr, "note: multispeed tune (%.1fx), "
-				"decimated to one play call per frame\n",
-				play_hz / atari_hz);
+		if (ratio > 1.5 || ksub > 1) {
+			fprintf(stderr, "multispeed %.1fx: %d record%s per video frame",
+				ratio, ksub, ksub > 1 ? "s" : "");
+			if (ratio > ksub * 1.1)
+				fprintf(stderr, " (the other play calls are dropped)");
+			else if (ratio < ksub * 0.9)
+				fprintf(stderr, " (play calls are repeated)");
+			fprintf(stderr, "\n");
+		}
 	}
 
 	/* ---- run the tune, one play call at a time ---- */
 	pk = calloc((size_t)ncalls, 8);
 	vi = calloc((size_t)ncalls, sizeof *vi);
-	fr = calloc((size_t)nframes, 8);
-	stream = malloc((size_t)nframes * 9 + 4);
+	fr = calloc((size_t)nrec, 8);
+	stream = malloc((size_t)nrec * 9 + 5);
 	if (!pk || !vi || !fr || !stream)
 		die("out of memory");
 	memset(vm, 0, sizeof vm);
@@ -888,24 +920,30 @@ int main(int argc, char **argv)
 
 	/* ---- resample play calls to Atari video frames ---- */
 	for (i = 0; i < nframes; i++) {
-		int c = (int)floor(i / atari_hz * play_hz);
-		if (c >= ncalls)
-			c = ncalls - 1;
-		memcpy(fr[i], pk[c], 8);
+		for (j = 0; j < ksub; j++) {
+			double t = (i + (double)j / ksub) / atari_hz;
+			int c = (int)floor(t * play_hz + 1e-6);
+			if (c >= ncalls)
+				c = ncalls - 1;
+			memcpy(fr[i * ksub + j], pk[c], 8);
+		}
 	}
 
 	if (dump) {
-		for (i = 0; i < nframes; i++) {
-			printf("%5d:", i);
+		for (i = 0; i < nrec; i++) {
+			if (ksub > 1)
+				printf("%5d.%d:", i / ksub, i % ksub);
+			else
+				printf("%5d:", i);
 			for (r = 0; r < 8; r++)
 				printf(" %02X", fr[i][r]);
 			printf("\n");
 		}
 	}
 
-	outlen = stream_encode((const uint8_t (*)[8])fr, nframes, cf->audctl,
-			       video_hz, stream);
-	if (stream_verify(stream, outlen, (const uint8_t (*)[8])fr, nframes))
+	outlen = stream_encode((const uint8_t (*)[8])fr, nrec, cf->audctl,
+			       video_hz, nframes, ksub, stream);
+	if (stream_verify(stream, outlen, (const uint8_t (*)[8])fr, nrec))
 		die("internal error: stream verification failed");
 
 	f = fopen(outname, "wb");
@@ -914,16 +952,16 @@ int main(int argc, char **argv)
 
 	{
 		int snd = 0;
-		for (i = 0; i < nframes; i++)
+		for (i = 0; i < nrec; i++)
 			for (r = 1; r < 8; r += 2)
 				if (fr[i][r] & 15) {
 					snd++;
 					break;
 				}
-		fprintf(stderr, "%s: %d frames (%.1f s), %zu bytes "
+		fprintf(stderr, "%s: %d frames x %d (%.1f s), %zu bytes "
 			"(%.1f bytes/frame), sound in %d%% of the frames\n",
-			outname, nframes, nframes / atari_hz, outlen,
-			(double)outlen / nframes, snd * 100 / nframes);
+			outname, nframes, ksub, nframes / atari_hz, outlen,
+			(double)outlen / nframes, snd * 100 / nrec);
 		if (snd == 0)
 			fprintf(stderr, "warning: the converted tune is silent%s\n",
 				nmi_handler(m) ? ": it installs an NMI handler "
