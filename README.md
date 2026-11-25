@@ -1,8 +1,8 @@
 # sid2pokey
 
-Converts a C64 SID tune (PSID/RSID) into something an Atari 8-bit can play on
-its POKEY chip, driven by the vertical blank interrupt.  Tunes with two SIDs
-(PSID v3) play on two POKEYs, one per SID, on an Atari with a stereo POKEY upgrade.
+Converts a C64 SID tune (PSID/RSID) into something an Atari 8-bit can play on its
+POKEY chip, driven by the vertical blank interrupt.  Tunes with two SIDs (PSID v3)
+play on two POKEYs, one per SID, on an Atari with a stereo POKEY upgrade.
 
 SID files are 6502 code plus data, not audio.  `tools/sidconv` runs the tune's
 `init`/`play` routines on a 6502 emulator, records what it writes to the SID
@@ -10,33 +10,103 @@ registers on every call, models the three SID voices (pitch, waveform, ADSR) and
 maps them to POKEY `AUDF`/`AUDC` registers, one Atari video frame at a time.
 The result (`song.bin`, one LZ-compressed stream per POKEY register, about 1
 byte per video frame) is linked into the Atari binary together with a small VBI
-player (`sp-common.asm`) that decodes it on the fly.
+player (`sp-common.asm`) that decodes it on the fly.  A C64 style text screen with
+the title of the tune and a VU meter per voice is drawn by `sid2pokey.c`.
+
+A step by step guide in Italian (54 pages, with tables, screenshots and diagrams)
+is in [`doc/sid2pokey-guida.pdf`](doc/sid2pokey-guida.pdf), and `skeleton/` holds
+the smallest possible player to start from.
+
+## Contents of the repository
+
+| Path | What it is |
+|---|---|
+| `tools/sidconv.c` | the converter: PSID reader, minimal C64 around the 6502 core, SID voice model, POKEY mapping, LZ encoder, stream verifier (host program) |
+| `tools/cpu6502.h` | the 6502 core used by the converter, undocumented opcodes included (PC only) |
+| `tools/mkfont.c` | C64 character ROM -> Atari font (`font.bin`) |
+| `sp-common.asm` | the player: LZ decoders, vertical blank and display list interrupts, two POKEYs, stereo detection |
+| `sp-data.asm`, `sp-font.asm` | include `song.bin` and `font.bin` in the binary |
+| `sid2pokey.c` | the front end: screen, font, VU meters, keyboard, display list patching |
+| `Makefile` | builds everything (see below) |
+| `skeleton/` | the minimal player: one POKEY, one record per frame, no compression, with its converter of `sidconv -d` dumps |
+| `tests/opcodes/` | test of the 6502 core against VICE x64sc (generator, driver, reference, script) |
+| `doc/` | the PDF guide and what builds it (`build_pdf.py`, one module per chapter, `img/`, `examples/`) |
+| `sid2gumby/` | the older project this one grew out of (Ivo van Poorten, GPL 3), kept as it was imported |
+| `LICENSE` | GPL 3 |
+
+`c64.h`, `fonts.c`, `fonts.h`, `invasion.asm`, `INVASION.asm`, `.project`,
+`.cproject` and the empty `README` are left over from the import of sid2gumby;
+the build does not use them.
 
 ## Build
 
-    make                                  # atarixl target (default)
+Requirements: [cc65](https://cc65.github.io) (`cl65`) and a host C compiler for the
+converter.  Optional: atari800 (to run it), VICE's C64 character ROM (for the
+font), `dir2atr` (only for `make atr`).
+
+    make                                  # atarixl target (default): sid2pokey.com for an XL/XE
     make MACH=atari                       # Atari 800, 48 KB
     make SID=path/to/tune.sid SONG=3 DURATION=90 VIDEO=ntsc
     make -B song.bin                      # re-convert after changing SONG/DURATION/VIDEO
+    make build                            # build and run it in atari800 (with -stereo)
 
-Requires cc65 and a host C compiler.  The converter alone:
+`song.bin` depends only on the SID file, so changing `SONG`, `DURATION` or `VIDEO`
+does not rebuild it by itself: use `make -B song.bin`.  `DURATION` is needed
+because a SID file has no length.
+
+| Target | Effect |
+|---|---|
+| `make` | builds `sid2pokey.com` for `MACH` (the converter, `song.bin` and `font.bin` first) |
+| `make build` | the same, then starts `$(EMULATOR)` |
+| `make song.bin` | converts `$(SID)` with `tools/sidconv` |
+| `make font.bin` | builds the C64 font from `$(CHARGEN)` (empty file if the ROM is missing) |
+| `make atr` | copies the program into `$(ATRFOLDER)/build` and creates an ATR with `dir2atr` (MyPicoDos 4.06) |
+| `make clean` | removes the objects, `sid2pokey.com`, `song.bin`, `font.bin` and the two host tools |
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MACH` | `atarixl` | `atarixl` (XL/XE) or `atari` (400/800) |
+| `SID` | `~/Music/C64Music/MUSICIANS/H/Hubbard_Rob/Commando.sid` | tune to convert |
+| `SONG` | `1` | song number inside the file |
+| `DURATION` | `60` | seconds to convert |
+| `VIDEO` | `pal` | `pal` or `ntsc`, the video standard of the Atari |
+| `CHARGEN` | `/usr/lib/vice/C64/chargen-901225-01.bin` | C64 character ROM |
+| `EMULATOR`, `STEREO` | `atari800`, `-stereo` | the emulator of `make build` and its stereo switch |
+| `ROM`, `ATRFOLDER` | `~/ATARI/ATARIXL.ROM` (`ATARIOSB.ROM` with `MACH=atari`), `~/ATARI/ATR` | OS ROM for the emulator, working folder of `make atr` |
+
+The stream must stay under about 20 KB on a 400/800 and about 24 KB on an XL/XE
+(the linker decides: it was tried with a large stream), next to the player, the
+screen code, the font and 16 ring buffers; the converter warns above 20 KB.  That is
+many minutes of music for most tunes (5 minutes of a 4x tune take 16 KB), but only
+about 80 seconds of a tune that compresses as badly as `Slanted_2SID`.
+
+### The converter alone
 
     gcc -O2 -o tools/sidconv tools/sidconv.c -lm
-    tools/sidconv -v -s 1 -t 60 -p pal -o song.bin tune.sid     # -d dumps the POKEY registers
-    tools/sidconv -m plain|bass16 ...                           # force a channel layout (default: auto)
-    tools/sidconv -k 1 ...                                      # force 1-4 records per video frame (default: from the tune)
-    tools/sidconv -S 1 ...                                      # convert only the first SID of a dual SID tune
+    tools/sidconv -v -s 1 -t 60 -p pal -o song.bin tune.sid
 
-`DURATION` is needed because a SID file has no length.  The stream must stay
-under about 20 KB on a 400/800 and about 24 KB on an XL/XE (the linker decides:
-it was tried with a large stream), next to the player, the screen code, the font
-and 16 ring buffers; the converter warns above 20 KB.  That is many minutes of
-music for most tunes (5 minutes of a 4x tune take 16 KB), but only about 80 seconds
-of a tune that compresses as badly as `Slanted_2SID`.
+| Option | Meaning |
+|---|---|
+| `-o file` | output stream (default `song.bin`) |
+| `-s n` | song number, 1-based (default: the file's start song) |
+| `-t seconds` | duration to convert (default 60) |
+| `-p pal\|ntsc` | video standard of the Atari (default `pal`) |
+| `-c pal\|ntsc\|auto` | clock the SID tune was written for (default `auto`: from the file) |
+| `-m auto\|plain\|bass16` | channel layout (default `auto`: best pitch accuracy) |
+| `-k n` | records per video frame, 1-4 (default: from the tune's rate) |
+| `-S n` | SID chips to convert, 1 or 2 (default: as many as the tune has, up to 2) |
+| `-d` | dump the POKEY registers of every record: `frame` (or `frame.n` with several records per frame), then the 8 or 16 values in hex |
+| `-v` | verbose: tune data, every layout tried with its average error in cents, sizes |
 
-On the Atari, a key press stops the tune and the next one plays it again from the
-start; the program never returns to DOS (without a DOS the XL/XE would end in a
-page of `BOOT ERROR`).
+Warnings: a silent result, an RSID file (it expects a real C64), a third SID
+(ignored), a stream larger than 20 KB.  Tunes that cannot be converted are refused
+with a message (see "Not handled yet").
+
+## On the Atari
+
+A key press stops the tune and the next one plays it again from the start; the
+program never returns to DOS (without a DOS the XL/XE would end in a page of
+`BOOT ERROR`).
 
 ### The screen
 
@@ -110,8 +180,10 @@ cents of every layout it tried):
 Details:
 
 - Notes below the range of a divider are folded up by octaves.
-- Noise waveform -> distortion `$8x`, with the divider set from the SID noise
-  LFSR clock (16 x pitch); every other waveform -> pure tone `$Ax`.
+- Noise waveform -> distortion `$8x`.  The SID shifts its noise LFSR at 16 times the
+  pitch frequency and the POKEY poly counter advances once per divider period, which
+  is twice the period of the tone output, so the divider is computed for 8 x the
+  pitch.  Every other waveform -> pure tone `$Ax`.
 - Volume = ADSR envelope x master volume.  The envelope follows the SID's own
   generator (as in reSID): an 8 bit counter driven by a rate counter in SID clock
   cycles, linear attack, and decay and release whose step time grows as the level
@@ -151,19 +223,23 @@ the second chip but returns 0 for its RANDOM); `$FF` constant is the mirror of t
 first chip.  Without a second POKEY only the first SID is played, nothing is
 written to `$D210+`, and the program says so.
 
+### Tunes that install their own interrupt
+
 Tunes with `play` address 0 install their own IRQ handler: sidconv emulates the
 interrupt the way a C64 delivers it (vector at `$0314` with the KERNAL visible, at
 `$FFFE` with RAM; a stub KERNAL provides the usual exits `$EA31`/`$EA34`/`$EA7B`/
 `$EA81`).  The call rate comes from how the tune programs CIA1 timer A or the VIC
 raster.  If `init` never returns (main loop) the IRQ handler is still called.
 
-Not handled yet: NMI driven tunes (sampled digi players), tunes whose main loop
-does the work, C64 BASIC tunes (`init` = 0), multispeed above 4x (resampled to 4),
-filter, ring modulation, sync, pulse width, sampled digi
-(`$D418`), a third SID, loop-point detection, using the second POKEY to improve
-single SID tunes (a 16 bit pair for every voice), calls to KERNAL routines
-other than the interrupt exits, the 12 JAM opcodes (they hang a real CPU).  A
-conversion that comes out silent is reported with a warning.
+### Not handled yet
+
+NMI driven tunes (sampled digi players), tunes whose main loop does the work, C64
+BASIC tunes (`init` = 0), multispeed above 4x (resampled to 4), filter, ring
+modulation, sync, pulse width, sampled digi (`$D418`), a third SID, loop-point
+detection, using the second POKEY to improve single SID tunes (a 16 bit pair for
+every voice), calls to KERNAL routines other than the interrupt exits, the 12 JAM
+opcodes (they hang a real CPU).  A conversion that comes out silent is reported with
+a warning.
 
 ## Stream and player
 
@@ -171,21 +247,57 @@ conversion that comes out silent is reported with a warning.
 records per frame, AUDCTL of the second POKEY, number of POKEYs, the register of
 each voice's volume for the VU meters, title, author and copyright, and for each of
 the 8 or 16 POKEY registers either a constant or the offset of its stream), then
-one LZ stream per register that changes, each with one value per record.  Tokens come in groups of 8 behind a flag byte: a literal is one byte, a
-match is two bytes (9 bit offset, length 3 to 130) into that register's own
-last 512 values.  The format is described in the comment at the top of
-`tools/sidconv.c`, which also decodes every stream it writes the way the player
-does and refuses to write it if the result is not identical.
+one LZ stream per register that changes, each with one value per record.  Tokens
+come in groups of 8 behind a flag byte: a literal is one byte, a match is two bytes
+(9 bit offset, length 3 to 130) into that register's own last 512 values.  The
+format is described in the comment at the top of `tools/sidconv.c`, which also
+decodes every stream it writes the way the player does and refuses to write it if
+the result is not identical.
 
 The player keeps a 512 byte ring buffer per register (8 KB of RAM for the 16
-registers of two POKEYs), decodes one value per register per record and writes them all to POKEY in one burst, so that
-channels and 16 bit pairs change together.  A decode takes in the order of a
-thousand cycles per record (not measured), which is why even 4 records per frame
-fit comfortably.  At the end the decoders are reset and the tune loops.
+registers of two POKEYs), decodes one value per register per record and writes them
+all to POKEY in one burst, so that channels and 16 bit pairs change together.  A
+decode takes in the order of a thousand cycles per record (not measured), which is
+why even 4 records per frame fit comfortably.  At the end the decoders are reset and
+the tune loops.
 
 Planar streams were chosen after measuring the alternatives on 31 tunes (every
 register as raw values or as deltas, LZ windows of 256, 512 and 1024 values):
 raw values with a 512 window were the smallest, so no delta arithmetic is needed.
+
+## The skeleton
+
+`skeleton/` is the smallest player that still has every ingredient: the converter, a
+stream format, an interrupt that writes the registers and a C program that installs
+it.  One POKEY (`-S 1`), three plain channels (`-m plain`), one record per frame
+(`-k 1`), no compression: the stream is, for every frame, a byte of mask followed by
+the values of the registers that changed.  `player.s` is about 110 lines and runs
+from the deferred vertical blank; it assembles and runs on both the 400/800 and the
+XL/XE.
+
+    cd skeleton
+    make SID=path/to/tune.sid DURATION=20     # sidconv -d, dump2raw.py, cl65 -t atari
+    atari800 -atari -osb_rom ~/ATARI/ATARIOSB.ROM -run player.com   # or -xe -xlxe_rom ... for an XL/XE
+
+20 seconds of Commando (997 frames): `player.com` 7174 bytes, stream 3982 bytes (676
+bytes in the LZ format of the full player, 5.9 times smaller).  In atari800 the POKEY
+registers recorded frame after frame are identical to the dump: 475 of 475 recorded
+frames on the 400/800 and 428 of 428 on the XE.  It lacks everything the full player
+adds: 16 bit pairs, multispeed, two POKEYs, compression, the screen.
+
+## Documentation
+
+`doc/sid2pokey-guida.pdf` (Italian) goes through the whole thing: SID and POKEY,
+the PSID format, how `sidconv` works, the stream, the player, the screen and the
+font, the skeleton step by step, how it was verified, a table of the traps met on
+the way, and appendices with the addresses, the commands, the formulas and a
+glossary.  To rebuild it:
+
+    python3 doc/build_pdf.py
+
+It needs python3, reportlab and the DejaVu fonts (`/usr/share/fonts/truetype/dejavu/`).
+The listings are read from the sources of the repository, the screenshots from
+`doc/img/` (taken from atari800).
 
 ## Checked so far
 
@@ -226,16 +338,19 @@ raw values with a 512 window were the smallest, so no delta arithmetic is needed
   opcodes included: `sh tests/opcodes/run.sh` runs 588 cases of ARR (also in decimal
   mode), XAA, LXA, AHX, TAS, SHX, SHY and LAS (registers, flags, stack pointer, the
   page-crossing behaviour of the stores) and compares each result with the reference
-  recorded from VICE: all identical.  The magic constants of XAA (`$EF`) and LXA
-  (`$EE`) are VICE's; on real chips they vary.  Three tunes of the sample (AHX, ARR,
-  LXA) were refused before.
+  recorded from VICE: all identical.  The script needs python3, ca65/ld65 and a C
+  compiler; VICE is only needed to refresh the reference (`vice_run.py`).  The magic
+  constants of XAA (`$EF`) and LXA (`$EE`) are VICE's; on real chips they vary.
+  Three tunes of the sample (AHX, ARR, LXA) were refused before.
 - Compression, 31 tunes of 45 s: 238 KB in the previous mask/delta format, 38 KB
   now (6.2x smaller; per tune from 3.8x to 13.3x, median 6.7x; 60 s of Commando
   take 2 KB, 60 s of the 4x tune 3.5 KB).
 - The LZ player was run in atari800 on the Atari 800 and the XE: 1x, 2x, 3x and 4x
   PAL and 2x NTSC give the converter's records exactly, the stream loops over
   several wraps, and stop / play again restarts from the first record.
-- Not checked by ear: how it actually sounds.
+- The skeleton: see above (475/475 and 428/428 frames identical).
+- Not checked by ear: how it actually sounds.  Everything was tried in an emulator,
+  not on real hardware.
 
 ## Notes
 
@@ -243,3 +358,9 @@ raw values with a 512 window were the smallest, so no delta arithmetic is needed
   taken from `atari.inc` (a wrapper), never called as `$E45C`.
 - `sid2gumby/` is the older project this one grew out of (Ivo van Poorten, GPL 3):
   it runs the SID code natively on the Atari instead of pre-converting it.
+- The C64 character ROM is Commodore's and is not in the repository; the figure of the
+  font in the PDF only shows what `tools/mkfont` makes of it.
+
+## License
+
+GNU General Public License, version 3 (see `LICENSE`).

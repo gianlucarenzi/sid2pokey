@@ -5,8 +5,9 @@
  * on a 6502 emulator, record what it writes to the SID registers on each
  * call of the play routine, model the three SID voices (waveform, pitch,
  * ADSR envelope) and map them to POKEY AUDF/AUDC registers, one Atari
- * video frame at a time.  The result is a small delta-coded stream that a
- * tiny 6502 player (sp-common.asm) replays from the vertical blank.
+ * video frame at a time.  The result is a small LZ-compressed stream, one per
+ * POKEY register, that a tiny 6502 player (sp-common.asm) replays from the
+ * vertical blank.
  *
  * Output stream format (all values bytes):
  *
@@ -49,7 +50,8 @@
  *   - noise waveform -> distortion $8x (17 bit poly), everything else
  *     -> pure tone $Ax.  Filter, ring modulation, sync and PWM are ignored.
  *   - volume = ADSR envelope (the SID's rate and exponential counters) * master volume.
- *   - multispeed tunes are decimated to one play call per video frame.
+ *   - multispeed tunes get 2-4 records per video frame (see above); tunes faster
+ *     than 4x are resampled to 4 records per frame.
  */
 #include <stdio.h>
 #include <stdlib.h>
