@@ -5,3 +5,8 @@
 /tools/sidconv
 /font.bin
 /tools/mkfont
+/doc/__pycache__/
+/skeleton/player.com
+/skeleton/song.bin
+/skeleton/song.raw
+/skeleton/dump.txt

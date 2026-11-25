@@ -1,0 +1,15 @@
+title     : Commando
+author    : Rob Hubbard
+copyright : 1985 Elite
+PSID v2  load $5000  4039 bytes  init $5FB2  play $5012
+song 1/19  VBI  SID PAL  play rate 50.125 Hz  -> Atari PAL 49.861 Hz
+SID 1 layout 3 channels, 64 kHz                        725.8 cents
+SID 1 layout 3 channels, 15 kHz                         26.4 cents
+SID 1 layout voice 1 on 16 bit pair, others 64 kHz     692.4 cents
+SID 1 layout voice 1 on 16 bit pair, others 15 kHz       9.3 cents
+SID 1 layout voice 2 on 16 bit pair, others 64 kHz     724.2 cents
+SID 1 layout voice 2 on 16 bit pair, others 15 kHz      18.8 cents
+SID 1 layout voice 3 on 16 bit pair, others 64 kHz      35.2 cents
+SID 1 layout voice 3 on 16 bit pair, others 15 kHz      24.9 cents
+using     : voice 1 on 16 bit pair, others 15 kHz (AUDCTL $51)
+doc/examples/commando.bin: 2991 frames x 1 (60.0 s), 2207 bytes (0.7 bytes/frame; the uncompressed delta format would be 12583), sound in 85% of the frames

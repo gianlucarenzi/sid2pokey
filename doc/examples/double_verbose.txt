@@ -1,0 +1,25 @@
+title     : Double
+author    : J. van Dongen & Udo Gorissen
+copyright : 1991 House Designs
+PSID v3  load $1000  4096 bytes  init $1000  play $1003
+song 1/1  CIA timer  SID PAL  play rate 100.249 Hz  -> Atari PAL 49.861 Hz
+multispeed 2.0x: 2 records per video frame
+SID 1 layout 3 channels, 64 kHz                       1078.1 cents
+SID 1 layout 3 channels, 15 kHz                         10.5 cents
+SID 1 layout voice 1 on 16 bit pair, others 64 kHz      15.4 cents
+SID 1 layout voice 1 on 16 bit pair, others 15 kHz       8.6 cents
+SID 1 layout voice 2 on 16 bit pair, others 64 kHz    1076.6 cents
+SID 1 layout voice 2 on 16 bit pair, others 15 kHz       2.4 cents
+SID 1 layout voice 3 on 16 bit pair, others 64 kHz    1064.3 cents
+SID 1 layout voice 3 on 16 bit pair, others 15 kHz      10.2 cents
+using     : POKEY 1: voice 2 on 16 bit pair, others 15 kHz (AUDCTL $51)
+SID 2 layout 3 channels, 64 kHz                        290.9 cents
+SID 2 layout 3 channels, 15 kHz                         16.7 cents
+SID 2 layout voice 1 on 16 bit pair, others 64 kHz     238.9 cents
+SID 2 layout voice 1 on 16 bit pair, others 15 kHz      11.3 cents
+SID 2 layout voice 2 on 16 bit pair, others 64 kHz     288.9 cents
+SID 2 layout voice 2 on 16 bit pair, others 15 kHz       6.9 cents
+SID 2 layout voice 3 on 16 bit pair, others 64 kHz      54.1 cents
+SID 2 layout voice 3 on 16 bit pair, others 15 kHz      15.3 cents
+using     : POKEY 2: voice 2 on 16 bit pair, others 15 kHz (AUDCTL $51)
+doc/examples/double.bin: 2991 frames x 2 (60.0 s), 5103 bytes (1.7 bytes/frame; the uncompressed delta format would be 22674), sound in 99% of the frames
