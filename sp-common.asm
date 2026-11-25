@@ -57,7 +57,10 @@ mask:	.res 1
 	ldx #>XITVBV
 	lda #7
 	jsr SETVBV
-	jmp silence
+	jsr silence
+	lda #0				; the stream may have set 16 bit / 15 kHz modes
+	sta audctl
+	rts
 .endproc
 
 silence:

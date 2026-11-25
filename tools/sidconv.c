@@ -19,10 +19,13 @@
  * The first frame always writes all eight registers, so the stream can be
  * looped by simply restarting from the first frame.
  *
- * Current mapping (first milestone, see TODO in the README):
- *   - SID voice 1..3 -> POKEY channel 1..3, 64 kHz base clock, 8 bit
- *     dividers (AUDCTL = 0); channel 4 unused.
- *   - pitch below the 64 kHz range (about 124 Hz) is folded up by octaves.
+ * Current mapping (see the README for what is still missing):
+ *   - The converter tries several layouts of the three SID voices on the
+ *     four POKEY channels and keeps the one with the smallest pitch error:
+ *     three 8 bit channels on the 64 kHz (or 15 kHz) clock, or one voice on
+ *     the 16 bit channel pair 1+2 at 1.79 MHz (precise bass) and the other
+ *     two on channels 3 and 4.
+ *   - pitch below the divider range is folded up by octaves.
  *   - noise waveform -> distortion $8x (17 bit poly), everything else
  *     -> pure tone $Ax.  Filter, ring modulation, sync and PWM are ignored.
  *   - volume = ADSR envelope (frame-rate approximation) * master volume.
@@ -291,57 +294,186 @@ static void voice_step(voice_t *vm, const uint8_t *r, int gate_events,
 
 /* --------------------------- POKEY mapping -------------------------- */
 
+typedef enum { PM_64K, PM_15K, PM_16BIT } pmode_t;
+
 typedef struct {
 	double sid_clk;		/* SID clock, Hz */
-	double clk64;		/* POKEY 64 kHz base clock, Hz */
+	double cpu_clk;		/* Atari CPU / POKEY clock, Hz */
+} clocks_t;
+
+/* What the voice model reports for one SID voice after one play call. */
+typedef struct {
+	double hz;		/* pitch frequency from the 16 bit register */
+	int    vol;		/* 0..15, already 0 when the voice is silent */
+	int    noise;		/* noise waveform selected */
+} vinfo_t;
+
+/* How the three SID voices are laid out on the four POKEY channels. */
+typedef struct {
+	char    name[48];
 	uint8_t audctl;
-	int    last_f[4];	/* last AUDF / distortion used per channel, kept */
-	int    last_dist[4];	/* while a channel is silent to save stream bytes */
-} map_t;
+	int     chan[3];	/* POKEY channel 0..3 of each voice; for a 16 bit
+				   pair the channel holding the low byte */
+	pmode_t mode[3];
+} config_t;
 
-/* One SID snapshot (the voice model must already be stepped) -> 8 regs. */
-static void map_frame(map_t *mp, const uint8_t *sid, const voice_t *vm,
-		      uint8_t out[8])
+typedef struct {
+	int n, dist;		/* last divider and distortion used by a voice */
+} vstate_t;
+
+static void voice_info(const uint8_t *sid, const voice_t *vm, int v,
+		       double sid_clk, vinfo_t *out)
 {
-	int mastervol = sid[0x18] & 15;
-	int v;
+	const uint8_t *r = sid + 7 * v;
+	int ctrl = r[4];
+	int wave = ctrl >> 4;
+	int fn = r[0] | r[1] << 8;
+	int vol = (int)((vm->level * (sid[0x18] & 15) + 127.0) / 255.0);
 
-	memset(out, 0, 8);
-	for (v = 0; v < 3; v++) {
-		const uint8_t *r = sid + 7 * v;
-		int ctrl = r[4];
-		int wave = ctrl >> 4;
-		int fn = r[0] | r[1] << 8;
-		int vol = (int)((vm[v].level * mastervol + 127.0) / 255.0);
-		int f, dist;
+	if (vol > 15)
+		vol = 15;
+	if ((ctrl & 8) || wave == 0 || fn == 0)		/* test bit, no wave */
+		vol = 0;
+	out->hz = fn * sid_clk / 16777216.0;
+	out->vol = vol;
+	out->noise = (wave & 8) != 0;
+}
 
-		if (vol > 15)
-			vol = 15;
-		if ((ctrl & 8) || wave == 0 || fn == 0)	/* test bit, no wave */
-			vol = 0;
+typedef struct {
+	int    n;		/* value for the AUDF register(s) */
+	double cost;		/* pitch error in cents, octave folds count 1200 */
+} quant_t;
 
-		if (vol == 0) {
-			f = mp->last_f[v];
-			dist = mp->last_dist[v];
-		} else {
-			double hz = fn * mp->sid_clk / 16777216.0;
-			double div = mp->clk64 / (2.0 * hz);	/* = N + 1 */
+/*
+ * Divider for a given frequency.
+ *   8 bit, 64 kHz / 15 kHz base clock: f = clk / (2 * (N + 1)),   N <= 255
+ *   16 bit pair, 1.79 MHz:             f = clk / (2 * (N + 7)),   N <= 65535
+ * Frequencies too low for the divider are folded up by octaves.
+ */
+static quant_t quantize(const clocks_t *ck, pmode_t mode, const vinfo_t *vi)
+{
+	double clk = ck->cpu_clk;
+	int off = 1, maxn = 255, folds = 0;
+	/* The SID shifts its noise LFSR at 16 times the pitch frequency; the
+	 * POKEY poly counter advances once per divider period, which is
+	 * twice the period of the tone output. */
+	double target = vi->noise ? vi->hz * 8.0 : vi->hz;
+	double div, got;
+	quant_t q;
 
-			while (div > 256.0)
-				div /= 2.0;			/* fold octaves up */
-			f = (int)floor(div + 0.5) - 1;
-			if (f < 0)
-				f = 0;
-			if (f > 255)
-				f = 255;
-			dist = (wave & 8) ? 0x80 : 0xA0;
-			mp->last_f[v] = f;
-			mp->last_dist[v] = dist;
-		}
-		out[2 * v]     = (uint8_t)f;
-		out[2 * v + 1] = (uint8_t)(dist | vol);
+	if (mode == PM_64K) {
+		clk /= 28.0;
+	} else if (mode == PM_15K) {
+		clk /= 114.0;
+	} else {
+		off = 7;
+		maxn = 65535;
 	}
-	/* channel 4 stays silent */
+	div = clk / (2.0 * target);			/* = N + off */
+	while (div - off > maxn + 0.5) {
+		div /= 2.0;
+		folds++;
+	}
+	q.n = (int)floor(div + 0.5) - off;
+	if (q.n < 0)
+		q.n = 0;
+	if (q.n > maxn)
+		q.n = maxn;
+	got = clk / (2.0 * (q.n + off));
+	q.cost = fabs(1200.0 * log2(got / (target * (double)(1 << folds))))
+		 + 1200.0 * folds;
+	return q;
+}
+
+/* All the layouts worth trying.  which: 0 auto, 1 plain only, 2 bass16 only */
+static int build_configs(config_t *c, int which)
+{
+	int n = 0, b, k, v;
+
+	if (which != 2) {
+		for (k = 0; k < 2; k++) {
+			snprintf(c[n].name, sizeof c[n].name,
+				 "3 channels, %s", k ? "15 kHz" : "64 kHz");
+			c[n].audctl = (uint8_t)k;
+			for (v = 0; v < 3; v++) {
+				c[n].chan[v] = v;
+				c[n].mode[v] = k ? PM_15K : PM_64K;
+			}
+			n++;
+		}
+	}
+	if (which != 1) {
+		for (b = 0; b < 3; b++) {
+			for (k = 0; k < 2; k++) {
+				int slot = 2;
+				snprintf(c[n].name, sizeof c[n].name,
+					 "voice %d on 16 bit pair, others %s",
+					 b + 1, k ? "15 kHz" : "64 kHz");
+				c[n].audctl = (uint8_t)(0x50 | k);
+				for (v = 0; v < 3; v++) {
+					if (v == b) {
+						c[n].chan[v] = 0;
+						c[n].mode[v] = PM_16BIT;
+					} else {
+						c[n].chan[v] = slot++;
+						c[n].mode[v] = k ? PM_15K : PM_64K;
+					}
+				}
+				n++;
+			}
+		}
+	}
+	return n;
+}
+
+/* Average pitch error (cents) over all the sounding, non-noise voices,
+ * weighted by volume. */
+static double config_cost(const config_t *cf, const clocks_t *ck,
+			  const vinfo_t (*vi)[3], int ncalls)
+{
+	double total = 0.0, weight = 0.0;
+	int i, v;
+
+	for (i = 0; i < ncalls; i++) {
+		for (v = 0; v < 3; v++) {
+			double w;
+			if (vi[i][v].vol == 0 || vi[i][v].noise)
+				continue;
+			w = vi[i][v].vol / 15.0;
+			total += w * quantize(ck, cf->mode[v], &vi[i][v]).cost;
+			weight += w;
+		}
+	}
+	return weight > 0.0 ? total / weight : 0.0;
+}
+
+/* One voice of one play call -> its POKEY registers in out[8]. */
+static void put_voice(const config_t *cf, const clocks_t *ck, int v,
+		      const vinfo_t *vi, vstate_t *st, uint8_t out[8])
+{
+	int ch = cf->chan[v];
+	int n, dist;
+
+	if (vi->vol == 0) {
+		/* silent: keep the last divider, it costs no stream bytes */
+		n = st->n;
+		dist = st->dist;
+	} else {
+		n = quantize(ck, cf->mode[v], vi).n;
+		dist = vi->noise ? 0x80 : 0xA0;
+		st->n = n;
+		st->dist = dist;
+	}
+
+	if (cf->mode[v] == PM_16BIT) {
+		out[2 * ch]     = (uint8_t)(n & 0xFF);	/* AUDFx: low byte   */
+		out[2 * ch + 1] = 0;			/* AUDCx: muted      */
+		out[2 * ch + 2] = (uint8_t)(n >> 8);	/* AUDFx+1: high byte */
+		out[2 * ch + 3] = (uint8_t)(dist | vi->vol);
+	} else {
+		out[2 * ch]     = (uint8_t)n;
+		out[2 * ch + 1] = (uint8_t)(dist | vi->vol);
+	}
 }
 
 /* ------------------------------ stream ----------------------------- */
@@ -410,6 +542,7 @@ static void usage(void)
 "  -t seconds  duration to convert (default 60)\n"
 "  -p pal|ntsc Atari video standard of the target (default pal)\n"
 "  -c pal|ntsc|auto  clock the SID tune was written for (default auto)\n"
+"  -m auto|plain|bass16  channel layout (default auto: best pitch accuracy)\n"
 "  -d          dump the POKEY registers of every frame\n"
 "  -v          verbose\n");
 	exit(2);
@@ -420,12 +553,17 @@ int main(int argc, char **argv)
 	const char *in = NULL, *outname = "song.bin";
 	int song = 0, verbose = 0, dump = 0, ntsc_target = 0;
 	int sid_clock = 0;		/* 0 auto, 1 pal, 2 ntsc */
+	int layout = 0;			/* 0 auto, 1 plain, 2 bass16 */
 	double seconds = 60.0;
 	psid_t psid;
 	machine_t *m;
 	cpu6502_t cpu;
-	map_t mp;
+	clocks_t ck;
+	config_t cands[8], *cf;
+	vstate_t vs[3];
 	voice_t vm[3];
+	vinfo_t (*vi)[3];
+	int ncand, best;
 	uint8_t (*pk)[8], (*fr)[8];
 	uint8_t *stream;
 	double play_hz, atari_hz, call_ms;
@@ -448,6 +586,12 @@ int main(int argc, char **argv)
 			if (!strcmp(a, "auto")) sid_clock = 0;
 			else if (!strcmp(a, "pal")) sid_clock = 1;
 			else if (!strcmp(a, "ntsc")) sid_clock = 2;
+			else usage();
+		} else if (!strcmp(a, "-m") && i + 1 < argc) {
+			a = argv[++i];
+			if (!strcmp(a, "auto")) layout = 0;
+			else if (!strcmp(a, "plain")) layout = 1;
+			else if (!strcmp(a, "bass16")) layout = 2;
 			else usage();
 		} else if (!strcmp(a, "-d")) dump = 1;
 		else if (!strcmp(a, "-v")) verbose = 1;
@@ -502,16 +646,11 @@ int main(int argc, char **argv)
 		} else {
 			play_hz = sid_clock == 2 ? NTSC_VBI_HZ : PAL_VBI_HZ;
 		}
-		mp.sid_clk = sidclk;
+		ck.sid_clk = sidclk;
 	}
 	atari_hz = ntsc_target ? NTSC_ATARI_HZ : PAL_ATARI_HZ;
 	video_hz = ntsc_target ? 60 : 50;
-	mp.clk64 = (ntsc_target ? NTSC_CPU_CLK : PAL_CPU_CLK) / 28.0;
-	mp.audctl = 0;
-	for (i = 0; i < 4; i++) {
-		mp.last_f[i] = 0;
-		mp.last_dist[i] = 0xA0;
-	}
+	ck.cpu_clk = ntsc_target ? NTSC_CPU_CLK : PAL_CPU_CLK;
 
 	nframes = (int)(seconds * atari_hz);
 	if (nframes > MAX_FRAMES)
@@ -538,9 +677,10 @@ int main(int argc, char **argv)
 
 	/* ---- run the tune, one play call at a time ---- */
 	pk = calloc((size_t)ncalls, 8);
+	vi = calloc((size_t)ncalls, sizeof *vi);
 	fr = calloc((size_t)nframes, 8);
 	stream = malloc((size_t)nframes * 9 + 4);
-	if (!pk || !fr || !stream)
+	if (!pk || !vi || !fr || !stream)
 		die("out of memory");
 	memset(vm, 0, sizeof vm);
 
@@ -548,10 +688,40 @@ int main(int argc, char **argv)
 		memset(m->gate_on, 0, sizeof m->gate_on);
 		if (call_sub(m, &cpu, (uint16_t)psid.play, 0, PLAY_STEPS))
 			die("play routine failed at call %d", i);
-		for (v = 0; v < 3; v++)
+		for (v = 0; v < 3; v++) {
 			voice_step(&vm[v], m->sid + 7 * v, m->gate_on[v], call_ms);
-		map_frame(&mp, m->sid, vm, pk[i]);
+			voice_info(m->sid, &vm[v], v, ck.sid_clk, &vi[i][v]);
+		}
 	}
+
+	/* ---- pick the channel layout with the smallest pitch error ---- */
+	ncand = build_configs(cands, layout);
+	best = 0;
+	{
+		double best_cost = 1e30;
+		for (i = 0; i < ncand; i++) {
+			double cost = config_cost(&cands[i], &ck,
+						  (const vinfo_t (*)[3])vi, ncalls);
+			if (verbose)
+				fprintf(stderr, "layout %-40s %6.1f cents\n",
+					cands[i].name, cost);
+			if (cost < best_cost) {
+				best_cost = cost;
+				best = i;
+			}
+		}
+	}
+	cf = &cands[best];
+	if (verbose)
+		fprintf(stderr, "using     : %s (AUDCTL $%02X)\n", cf->name,
+			cf->audctl);
+
+	memset(vs, 0, sizeof vs);
+	for (v = 0; v < 3; v++)
+		vs[v].dist = 0xA0;
+	for (i = 0; i < ncalls; i++)
+		for (v = 0; v < 3; v++)
+			put_voice(cf, &ck, v, &vi[i][v], &vs[v], pk[i]);
 
 	/* ---- resample play calls to Atari video frames ---- */
 	for (i = 0; i < nframes; i++) {
@@ -570,7 +740,7 @@ int main(int argc, char **argv)
 		}
 	}
 
-	outlen = stream_encode((const uint8_t (*)[8])fr, nframes, mp.audctl,
+	outlen = stream_encode((const uint8_t (*)[8])fr, nframes, cf->audctl,
 			       video_hz, stream);
 	if (stream_verify(stream, outlen, (const uint8_t (*)[8])fr, nframes))
 		die("internal error: stream verification failed");
