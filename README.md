@@ -46,11 +46,18 @@ Details:
 - The tempo follows real time: play calls are resampled to the Atari frame rate
   (PAL 49.86 Hz or NTSC 59.92 Hz).
 
-Not handled yet: tunes with `play` address 0 (own IRQ handler, rejected with an
-error), multispeed tunes (decimated to one play call per frame), filter, ring
-modulation, sync, pulse width, sampled digi (`$D418`), second POKEY (stereo),
-loop-point detection, RSID tunes that need a real C64 environment, a few
-unstable undocumented 6502 opcodes.
+Tunes with `play` address 0 install their own IRQ handler: sidconv emulates the
+interrupt the way a C64 delivers it (vector at `$0314` with the KERNAL visible, at
+`$FFFE` with RAM; a stub KERNAL provides the usual exits `$EA31`/`$EA34`/`$EA7B`/
+`$EA81`).  The call rate comes from how the tune programs CIA1 timer A or the VIC
+raster.  If `init` never returns (main loop) the IRQ handler is still called.
+
+Not handled yet: NMI driven tunes (sampled digi players), tunes whose main loop
+does the work, C64 BASIC tunes (`init` = 0), multispeed tunes (decimated to one
+play call per frame), filter, ring modulation, sync, pulse width, sampled digi
+(`$D418`), second POKEY (stereo), loop-point detection, calls to KERNAL routines
+other than the interrupt exits, a few unstable undocumented 6502 opcodes.  A
+conversion that comes out silent is reported with a warning.
 
 ## Checked so far
 
@@ -60,9 +67,12 @@ unstable undocumented 6502 opcodes.
 - The divider formulas were checked against the emulator's audio: synthetic
   tones (16 bit pair at 110 Hz and 55 Hz, 8 bit at 64 kHz and 15 kHz) recorded
   to WAV peak within 0.3 cents of the computed frequency.
-- On a sample of 300 HVSC tunes by various composers, 283 convert without
-  errors (a 16 bit pair is chosen in almost all of them); the other 17 are the
-  `play` address 0 case.
+- On a sample of 4370 HVSC tunes (every 12th file of `MUSICIANS`), 4289 (98%)
+  convert without errors, 40 of them silent (mostly sampled digi); the 81 refused
+  are 28 NMI driven, 26 main-loop driven, 19 BASIC, 8 other.  Before the IRQ
+  support the same sample converted 4137 (94.7%).
+- IRQ driven tunes (First Strike, CBM64-2, 1200 A.D., Caverns of Eriban) give
+  sequences of real notes.
 - Not checked by ear: how it actually sounds.
 
 ## Notes

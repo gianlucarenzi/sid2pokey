@@ -149,10 +149,13 @@ static void psid_load(psid_t *s, const char *path)
 
 typedef struct {
 	uint8_t  mem[65536];
+	uint8_t  kernal[0x2000];	/* ROM seen at $E000 while HIRAM is set    */
 	uint8_t  sid[0x20];		/* last value written to each SID register */
 	int      gate_on[3];		/* gate 0->1 transitions during this call  */
 	int      cia_set;		/* tune programmed CIA1 timer A latch      */
 	uint16_t cia_latch;
+	uint8_t  cia_mask;		/* CIA1 interrupt mask (bit 0: timer A)    */
+	int      vic_irq;		/* VIC raster interrupt enabled            */
 	uint8_t  raster;
 	uint32_t lfsr;
 } machine_t;
@@ -160,6 +163,9 @@ typedef struct {
 static uint8_t bus_read(void *ctx, uint16_t addr)
 {
 	machine_t *m = ctx;
+
+	if (addr >= 0xE000 && (m->mem[1] & 2))	/* KERNAL ROM over the RAM */
+		return m->kernal[addr - 0xE000];
 
 	if (addr >= 0xD400 && addr < 0xD800) {
 		switch (addr & 0x1F) {
@@ -175,6 +181,12 @@ static uint8_t bus_read(void *ctx, uint16_t addr)
 		return m->raster += 7;
 	if (addr == 0xD011)
 		return 0;
+	if (addr == 0xD019)			/* VIC IRQ flags: raster pending */
+		return m->vic_irq ? 0x81 : 0;
+	if (addr == 0xDC0D)			/* CIA1 ICR: timer A pending */
+		return (m->cia_mask & 1) ? 0x81 : 0;
+	if (addr == 0xDC00 || addr == 0xDC01)	/* keyboard / joystick: idle */
+		return 0xFF;
 	return m->mem[addr];
 }
 
@@ -200,22 +212,27 @@ static void bus_write(void *ctx, uint16_t addr, uint8_t val)
 	} else if (addr == 0xDC05) {
 		m->cia_latch = (uint16_t)((m->cia_latch & 0x00FF) | val << 8);
 		m->cia_set = 1;
+	} else if (addr == 0xDC0D) {
+		if (val & 0x80)
+			m->cia_mask |= val & 0x1F;
+		else
+			m->cia_mask &= (uint8_t)~(val & 0x1F);
+	} else if (addr == 0xD01A) {
+		m->vic_irq = val & 1;
 	}
 	m->mem[addr] = val;
 }
 
-/* Run a subroutine until it returns to TRAP_ADDR. */
-static int call_sub(machine_t *m, cpu6502_t *cpu, uint16_t addr, uint8_t a,
-		    long max_steps)
+/*
+ * Run from entry until the code returns to TRAP_ADDR.  If timed_out is not
+ * NULL, running out of steps is not an error: *timed_out is set instead.
+ */
+static int run_to_trap(cpu6502_t *cpu, uint16_t entry, long max_steps,
+		       int *timed_out)
 {
 	long n;
 
-	cpu_reset_state(cpu);
-	cpu->a = a;
-	cpu_push(cpu, (TRAP_ADDR - 1) >> 8);
-	cpu_push(cpu, (TRAP_ADDR - 1) & 0xFF);
-	cpu->pc = addr;
-
+	cpu->pc = entry;
 	for (n = 0; n < max_steps; n++) {
 		if (cpu->pc == TRAP_ADDR)
 			return 0;
@@ -226,10 +243,117 @@ static int call_sub(machine_t *m, cpu6502_t *cpu, uint16_t addr, uint8_t a,
 			return -1;
 		}
 	}
-	(void)m;
+	if (timed_out) {
+		*timed_out = 1;
+		return 0;
+	}
 	fprintf(stderr, "sidconv: routine at $%04X did not return "
-		"(%ld instructions)\n", addr, max_steps);
+		"(%ld instructions)\n", entry, max_steps);
 	return -1;
+}
+
+/* JSR-style call of an INIT/PLAY subroutine (ends with RTS). */
+static int call_sub(cpu6502_t *cpu, uint16_t addr, uint8_t a, long max_steps,
+		    int *timed_out)
+{
+	cpu_reset_state(cpu);
+	cpu->a = a;
+	cpu_push(cpu, (TRAP_ADDR - 1) >> 8);
+	cpu_push(cpu, (TRAP_ADDR - 1) & 0xFF);
+	return run_to_trap(cpu, addr, max_steps, timed_out);
+}
+
+/*
+ * An interrupt as the C64 delivers it (ends with RTI): the CPU pushes PC and
+ * P; with the KERNAL ROM visible its IRQ stub also pushes A, X and Y before
+ * jumping through the vector at $0314.
+ */
+static int call_irq(cpu6502_t *cpu, int kernal, uint16_t handler, long max_steps)
+{
+	cpu_reset_state(cpu);
+	cpu_push(cpu, TRAP_ADDR >> 8);
+	cpu_push(cpu, TRAP_ADDR & 0xFF);
+	cpu_push(cpu, cpu_getp(cpu, 0));
+	cpu->i = 1;
+	if (kernal) {
+		cpu_push(cpu, cpu->a);
+		cpu_push(cpu, cpu->x);
+		cpu_push(cpu, cpu->y);
+	}
+	return run_to_trap(cpu, handler, max_steps, NULL);
+}
+
+/* CPU port value the PSID driver sets before running code at addr. */
+static uint8_t iomap(unsigned addr)
+{
+	if (addr < 0xA000)
+		return 0x37;
+	if (addr < 0xD000)
+		return 0x36;
+	if (addr >= 0xE000)
+		return 0x35;
+	return 0x34;
+}
+
+/*
+ * What a tune can rely on without a real KERNAL: the default IRQ/BRK/NMI
+ * vectors in RAM and a stub KERNAL ROM (visible at $E000 while HIRAM is set,
+ * as on the C64, even when the tune has RAM there).  It holds the tail of the
+ * interrupt routine that tunes jump to when they are done ($EA31, $EA34,
+ * $EA7B, $EA7E, $EA81) and the keyboard scan ($EA87); anything else is an illegal opcode,
+ * so that a tune calling other KERNAL routines is reported instead of
+ * silently misbehaving.
+ */
+static void c64_setup(machine_t *m, unsigned init)
+{
+	static const uint8_t tail[] = {
+		0x4C, 0x81, 0xEA,		/* $EA31: JMP $EA81            */
+		0xAD, 0x0D, 0xDC,		/* $EA7E: LDA $DC0D (ack CIA)  */
+		0x68, 0xA8, 0x68, 0xAA,		/* $EA81: PLA TAY PLA TAX      */
+		0x68, 0x40,			/*        PLA RTI              */
+		0x60				/* $EA87: RTS (SCNKEY)         */
+	};
+	static const uint8_t vectors[] = {
+		0x43, 0xFE, 0xE2, 0xFC, 0x48, 0xFF	/* NMI, RESET, IRQ     */
+	};
+
+	m->mem[0] = 0x2F;
+	m->mem[1] = iomap(init);
+	m->mem[0x314] = 0x31; m->mem[0x315] = 0xEA;	/* IRQ */
+	m->mem[0x316] = 0x66; m->mem[0x317] = 0xFE;	/* BRK */
+	m->mem[0x318] = 0x47; m->mem[0x319] = 0xFE;	/* NMI */
+
+	memset(m->kernal, 0x02, sizeof m->kernal);
+	memcpy(m->kernal + 0xEA31 - 0xE000, tail, 3);
+	memcpy(m->kernal + 0xEA34 - 0xE000, tail, 3);	/* skips the clock update  */
+	m->kernal[0xEA7B - 0xE000] = 0x4C;		/* JMP $EA7E: scan + ack   */
+	m->kernal[0xEA7C - 0xE000] = 0x7E;
+	m->kernal[0xEA7D - 0xE000] = 0xEA;
+	memcpy(m->kernal + 0xEA7E - 0xE000, tail + 3, 3);
+	memcpy(m->kernal + 0xEA81 - 0xE000, tail + 6, 7);
+	memcpy(m->kernal + 0xFFFA - 0xE000, vectors, sizeof vectors);
+}
+
+/* Address of the NMI handler the tune installed, 0 if it installed none. */
+static int nmi_handler(const machine_t *m)
+{
+	int h = (m->mem[1] & 2) ? m->mem[0x318] | m->mem[0x319] << 8
+				: m->mem[0xFFFA] | m->mem[0xFFFB] << 8;
+	return h == 0xFE47 ? 0 : h;
+}
+
+/* Address of the IRQ handler the tune installed, 0 if it installed none. */
+static int irq_handler(const machine_t *m, int *kernal)
+{
+	int h;
+
+	*kernal = (m->mem[1] & 2) != 0;		/* HIRAM: KERNAL ROM visible */
+	h = *kernal ? m->mem[0x314] | m->mem[0x315] << 8
+		    : m->mem[0xFFFE] | m->mem[0xFFFF] << 8;
+	if (h == 0xEA31 || h == 0xEA34 || h == 0xEA7B || h == 0xEA7E ||
+	    h == 0xEA81)				/* the default */
+		return 0;
+	return h;
 }
 
 /* --------------------------- voice model --------------------------- */
@@ -568,6 +692,8 @@ int main(int argc, char **argv)
 	uint8_t *stream;
 	double play_hz, atari_hz, call_ms;
 	int ncalls, nframes, video_hz, speed_cia, i, v, r;
+	int irq_mode, irq_kernal = 0, irq_vec = 0, init_looping = 0;
+	const char *rate_src;
 	size_t outlen;
 	FILE *f;
 
@@ -606,9 +732,9 @@ int main(int argc, char **argv)
 	if (!strcmp(psid.magic, "RSID"))
 		fprintf(stderr, "sidconv: warning: RSID files expect a real C64 "
 			"environment; trying anyway\n");
-	if (psid.play == 0)
-		die("play address is 0: the tune installs its own IRQ handler "
-		    "(not supported yet)");
+	if (psid.init == 0)
+		die("init address is 0: C64 BASIC tune, not supported");
+	irq_mode = (psid.play == 0);	/* the tune installs its own IRQ handler */
 	if (song == 0)
 		song = psid.start;
 	if (song < 1 || song > psid.songs)
@@ -624,13 +750,27 @@ int main(int argc, char **argv)
 	if (!m)
 		die("out of memory");
 	m->lfsr = 0x1234567;
+	c64_setup(m, (unsigned)psid.init);
 	memcpy(m->mem + psid.load, psid.data, psid.len);
 	cpu.read = bus_read;
 	cpu.write = bus_write;
 	cpu.ctx = m;
 
-	if (call_sub(m, &cpu, (uint16_t)psid.init, (uint8_t)(song - 1), INIT_STEPS))
+	if (call_sub(&cpu, (uint16_t)psid.init, (uint8_t)(song - 1), INIT_STEPS,
+		     irq_mode ? &init_looping : NULL))
 		die("init routine failed");
+	if (irq_mode) {
+		irq_vec = irq_handler(m, &irq_kernal);
+		if (!irq_vec) {
+			if (nmi_handler(m))
+				die("play address is 0 and the tune is driven by "
+				    "an NMI handler at $%04X (usually a sampled "
+				    "digi player): not supported", nmi_handler(m));
+			die("play address is 0 but init did not install an IRQ "
+			    "handler (the tune drives itself from a main loop): "
+			    "not supported");
+		}
+	}
 
 	/* ---- timing ---- */
 	{
@@ -638,13 +778,25 @@ int main(int argc, char **argv)
 		 * 32 reuse bit 31 per the PSID specification. */
 		int bit = (song - 1) < 32 ? (song - 1) : 31;
 		double sidclk = sid_clock == 2 ? NTSC_SID_CLK : PAL_SID_CLK;
+		double vbi_hz = sid_clock == 2 ? NTSC_VBI_HZ : PAL_VBI_HZ;
+		int timer = m->cia_set && m->cia_latch;
+
 		speed_cia = (psid.speed >> bit) & 1;
-		if (speed_cia) {
-			play_hz = m->cia_set && m->cia_latch
-				  ? sidclk / (m->cia_latch + 1.0)
-				  : 60.0;
+		if (irq_mode && (m->cia_mask & 1) && timer) {
+			/* the tune runs its own CIA timer interrupt */
+			speed_cia = 1;
+			play_hz = sidclk / (m->cia_latch + 1.0);
+			rate_src = "CIA timer IRQ";
+		} else if (irq_mode && m->vic_irq) {
+			speed_cia = 0;
+			play_hz = vbi_hz;
+			rate_src = "raster IRQ";
+		} else if (speed_cia) {
+			play_hz = timer ? sidclk / (m->cia_latch + 1.0) : 60.0;
+			rate_src = "CIA timer";
 		} else {
-			play_hz = sid_clock == 2 ? NTSC_VBI_HZ : PAL_VBI_HZ;
+			play_hz = vbi_hz;
+			rate_src = "VBI";
 		}
 		ck.sid_clk = sidclk;
 	}
@@ -664,9 +816,13 @@ int main(int argc, char **argv)
 		fprintf(stderr, "%s v%d  load $%04X  %zu bytes  init $%04X  play $%04X\n",
 			psid.magic, psid.version, psid.load, psid.len,
 			psid.init, psid.play);
+		if (irq_mode)
+			fprintf(stderr, "own IRQ handler at $%04X (via %s)%s\n",
+				irq_vec, irq_kernal ? "$0314" : "$FFFE",
+				init_looping ? ", init stays in a main loop" : "");
 		fprintf(stderr, "song %d/%d  %s  SID %s  play rate %.3f Hz  "
 			"-> Atari %s %.3f Hz\n", song, psid.songs,
-			speed_cia ? "CIA timer" : "VBI",
+			rate_src,
 			sid_clock == 2 ? "NTSC" : "PAL", play_hz,
 			ntsc_target ? "NTSC" : "PAL", atari_hz);
 		if (play_hz > atari_hz * 1.5)
@@ -686,8 +842,15 @@ int main(int argc, char **argv)
 
 	for (i = 0; i < ncalls; i++) {
 		memset(m->gate_on, 0, sizeof m->gate_on);
-		if (call_sub(m, &cpu, (uint16_t)psid.play, 0, PLAY_STEPS))
+		if (irq_mode) {
+			irq_vec = irq_handler(m, &irq_kernal);
+			if (!irq_vec)
+				die("IRQ handler removed at call %d", i);
+			if (call_irq(&cpu, irq_kernal, (uint16_t)irq_vec, PLAY_STEPS))
+				die("IRQ handler failed at call %d", i);
+		} else if (call_sub(&cpu, (uint16_t)psid.play, 0, PLAY_STEPS, NULL)) {
 			die("play routine failed at call %d", i);
+		}
 		for (v = 0; v < 3; v++) {
 			voice_step(&vm[v], m->sid + 7 * v, m->gate_on[v], call_ms);
 			voice_info(m->sid, &vm[v], v, ck.sid_clk, &vi[i][v]);
@@ -749,9 +912,25 @@ int main(int argc, char **argv)
 	if (!f || fwrite(stream, 1, outlen, f) != outlen || fclose(f))
 		die("cannot write %s", outname);
 
-	fprintf(stderr, "%s: %d frames (%.1f s), %zu bytes (%.1f bytes/frame)\n",
-		outname, nframes, nframes / atari_hz, outlen,
-		(double)outlen / nframes);
+	{
+		int snd = 0;
+		for (i = 0; i < nframes; i++)
+			for (r = 1; r < 8; r += 2)
+				if (fr[i][r] & 15) {
+					snd++;
+					break;
+				}
+		fprintf(stderr, "%s: %d frames (%.1f s), %zu bytes "
+			"(%.1f bytes/frame), sound in %d%% of the frames\n",
+			outname, nframes, nframes / atari_hz, outlen,
+			(double)outlen / nframes, snd * 100 / nframes);
+		if (snd == 0)
+			fprintf(stderr, "warning: the converted tune is silent%s\n",
+				nmi_handler(m) ? ": it installs an NMI handler "
+				"(probably sampled digi), which is not emulated"
+				: "; it probably needs something sidconv does "
+				"not emulate");
+	}
 	if (outlen > 40000)
 		fprintf(stderr, "warning: stream larger than 40 KB, it may not "
 			"fit in a 48 KB Atari\n");
