@@ -3,3 +3,5 @@
 /sp-common.o
 /song.bin
 /tools/sidconv
+/font.bin
+/tools/mkfont

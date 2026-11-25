@@ -10,11 +10,18 @@
  *
  * Output stream format (all values bytes):
  *
- *   header (7 + 3 * registers bytes; 8 registers per POKEY, 16 for two):
- *     AUDCTL (POKEY 1), video_hz (50|60), frames (16 bit little endian),
- *     records per video frame (1..4), AUDCTL of POKEY 2, number of POKEYs,
- *     then for each register (AUDF1 AUDC1 AUDF2 AUDC2 ... AUDC4, then the same
- *     for POKEY 2):
+ *   header (109 + 3 * registers bytes; 8 registers per POKEY, 16 for two):
+ *     0      AUDCTL (POKEY 1)
+ *     1      video_hz (50|60)
+ *     2-3    frames (16 bit little endian)
+ *     4      records per video frame (1..4)
+ *     5      AUDCTL of POKEY 2
+ *     6      number of POKEYs
+ *     7-12   for each SID voice, the register (0-15) that holds its volume in
+ *            the low nibble, or $FF: this is what the player's VU meters read
+ *     13-44, 45-76, 77-108   title, author, copyright (32 bytes each, NUL padded)
+ *     109... for each register (AUDF1 AUDC1 AUDF2 AUDC2 ... AUDC4, then the same
+ *            for POKEY 2), 3 bytes:
  *       0, value, 0              the register never changes
  *       1, offset (16 bit)       offset of its LZ stream from the file start
  *   one LZ stream per changing register, each holding frames x records
@@ -712,7 +719,8 @@ static void put_voice(const config_t *cf, const clocks_t *ck, int v,
 
 /* ------------------------------ stream ----------------------------- */
 
-#define HDR_SIZE(nreg)	(7 + 3 * (nreg))
+#define HDR_TABLE	109		/* register table: after 7 + 6 + 96 bytes */
+#define HDR_SIZE(nreg)	(HDR_TABLE + 3 * (nreg))
 #define LZ_WINDOW	512
 #define LZ_MINLEN	3
 #define LZ_MAXLEN	130
@@ -803,7 +811,8 @@ static size_t lz_encode(const uint8_t *s, int n, uint8_t *out)
  */
 static size_t stream_encode(const uint8_t (*fr)[MAX_REGS], int nrec, int nreg,
 			    const uint8_t audctl[2], int video_hz, int frames,
-			    int sub, uint8_t *out)
+			    int sub, const uint8_t vureg[6], const psid_t *ps,
+			    uint8_t *out)
 {
 	uint8_t *col = malloc((size_t)nrec);
 	size_t pos = HDR_SIZE(nreg);
@@ -818,8 +827,14 @@ static size_t stream_encode(const uint8_t (*fr)[MAX_REGS], int nrec, int nreg,
 	out[4] = (uint8_t)sub;
 	out[5] = audctl[1];
 	out[6] = (uint8_t)(nreg / 8);
+	memcpy(out + 7, vureg, 6);
+	memset(out + 13, 0, 96);
+	memcpy(out + 13, ps->title, strlen(ps->title) < 32 ? strlen(ps->title) : 32);
+	memcpy(out + 45, ps->author, strlen(ps->author) < 32 ? strlen(ps->author) : 32);
+	memcpy(out + 77, ps->copyright,
+	       strlen(ps->copyright) < 32 ? strlen(ps->copyright) : 32);
 	for (r = 0; r < nreg; r++) {
-		uint8_t *h = out + 7 + 3 * r;
+		uint8_t *h = out + HDR_TABLE + 3 * r;
 		int constant = 1;
 
 		for (i = 0; i < nrec; i++) {
@@ -877,11 +892,11 @@ static int stream_verify(const uint8_t *s, size_t len,
 	if (len < (size_t)HDR_SIZE(nreg))
 		return -1;
 	for (r = 0; r < nreg; r++)
-		sp[r] = (size_t)s[7 + 3 * r + 1] | (size_t)s[7 + 3 * r + 2] << 8;
+		sp[r] = (size_t)s[HDR_TABLE + 3 * r + 1] | (size_t)s[HDR_TABLE + 3 * r + 2] << 8;
 
 	for (i = 0; i < nrec; i++) {
 		for (r = 0; r < nreg; r++) {
-			const uint8_t *h = s + 7 + 3 * r;
+			const uint8_t *h = s + HDR_TABLE + 3 * r;
 			uint8_t v;
 
 			if (h[0] == 0) {
@@ -973,6 +988,7 @@ int main(int argc, char **argv)
 	int ncand, best[2];
 	uint8_t (*pk)[MAX_REGS], (*fr)[MAX_REGS];
 	uint8_t audctl[2] = { 0, 0 };
+	uint8_t vureg[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 	uint8_t *stream;
 	double play_hz, atari_hz, call_cycles;
 	int ncalls, nframes, video_hz, speed_cia, i, v, r;
@@ -1208,8 +1224,13 @@ int main(int argc, char **argv)
 			fprintf(stderr, "using     : %s%s (AUDCTL $%02X)\n",
 				chips > 1 ? ch ? "POKEY 2: " : "POKEY 1: " : "",
 				cf[ch]->name, cf[ch]->audctl);
-		for (v = 0; v < 3; v++)
+		for (v = 0; v < 3; v++) {
+			/* the AUDC that carries the volume of this voice: the second
+			 * channel of a 16 bit pair, else the voice's own channel */
+			vureg[3 * ch + v] = (uint8_t)(8 * ch + 2 * cf[ch]->chan[v] +
+				(cf[ch]->mode[v] == PM_16BIT ? 3 : 1));
 			vs[ch][v].dist = 0xA0;
+		}
 		for (i = 0; i < ncalls; i++)
 			for (v = 0; v < 3; v++)
 				put_voice(cf[ch], &ck, v, &vi[i][3 * ch + v],
@@ -1240,7 +1261,7 @@ int main(int argc, char **argv)
 	}
 
 	outlen = stream_encode((const uint8_t (*)[MAX_REGS])fr, nrec, nreg, audctl,
-			       video_hz, nframes, ksub, stream);
+			       video_hz, nframes, ksub, vureg, &psid, stream);
 	if (stream_verify(stream, outlen, (const uint8_t (*)[MAX_REGS])fr, nrec,
 			  nreg))
 		die("internal error: stream verification failed");
@@ -1271,10 +1292,12 @@ int main(int argc, char **argv)
 				: "; it probably needs something sidconv does "
 				"not emulate");
 	}
-	/* what is left of a 48 KB Atari after the player: about 6 KB of code
-	 * and runtime, 8.4 KB of ring buffers (16 registers) and some stack */
-	if (outlen > 22000)
-		fprintf(stderr, "warning: stream larger than 22 KB, it may not fit "
-			"in a 48 KB Atari\n");
+	/* what the linker accepted in a test with a large stream: about 20 KB on a
+	 * 400/800 (the target keeps 2 KB free for the font) and about 24 KB on an
+	 * XL/XE, after the player, the screen code, the font and 8.4 KB of ring
+	 * buffers (16 registers) */
+	if (outlen > 20000)
+		fprintf(stderr, "warning: stream larger than 20 KB: it will not fit a "
+			"400/800 (an XL/XE takes about 24 KB)\n");
 	return 0;
 }

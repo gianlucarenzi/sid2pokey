@@ -28,13 +28,57 @@ Requires cc65 and a host C compiler.  The converter alone:
     tools/sidconv -S 1 ...                                      # convert only the first SID of a dual SID tune
 
 `DURATION` is needed because a SID file has no length.  The stream must stay
-under about 22 KB to fit in a 48 KB machine next to the player (which needs about
-15 KB, with 16 ring buffers); the converter warns.  That is many minutes of music: 5
-minutes of a 4x tune take 16 KB.
+under about 20 KB on a 400/800 and about 24 KB on an XL/XE (the linker decides:
+it was tried with a large stream), next to the player, the screen code, the font
+and 16 ring buffers; the converter warns above 20 KB.  That is many minutes of
+music for most tunes (5 minutes of a 4x tune take 16 KB), but only about 80 seconds
+of a tune that compresses as badly as `Slanted_2SID`.
 
 On the Atari, a key press stops the tune and the next one plays it again from the
 start; the program never returns to DOS (without a DOS the XL/XE would end in a
 page of `BOOT ERROR`).
+
+### The screen
+
+A text screen in the style of the C64: a title bar, a box with the title, author and
+copyright of the tune (taken from the SID file, 32 characters each), and a box
+with one VU meter per SID voice: three bars with one POKEY, six (two groups of
+three, "POKEY 1" and "POKEY 2") with two.  Below, how it plays (1 or 2 POKEYs, frame
+rate, speed 1x-4x) and the time.  The colours are the C64 blue and light blue
+(border, background and text), as the Atari text mode has two colours.
+
+The bars are built from block characters of 7 pixel rows plus a blank one, so they
+look like segments; the level falls smoothly after a peak and a thin marker holds the
+peak for half a second.  A voice's level is the volume of the POKEY channel the
+converter gave it (the stream header says which register that is for each of the
+6 voices) read from the values the player has just decoded, so the meters show what
+the POKEY plays, not what the SID would.
+
+The font is the C64 character set, built by `tools/mkfont` from the C64 character
+ROM (the Makefile looks for VICE's `/usr/lib/vice/C64/chargen-901225-01.bin`, or
+the file in `CHARGEN=`).  The ROM is Commodore's, so the font is built locally into
+`font.bin` and is not part of the repository; without the ROM the build goes on and
+the screen uses the Atari font (the frames and the meters are drawn with glyphs that
+the program defines itself).  Letters, digits and punctuation are put in the order of
+the Atari screen codes, the lower case comes from the C64 lower case set.
+
+How the font gets to the screen depends on the machine:
+
+- XL/XE (`atarixl` target): cc65 keeps the OS ROM switched off and has already
+  copied the ROM font to RAM at `$E000`, so the font is patched where it is.  A
+  multispeed tune plays from DLIs, and cc65 switches the ROM on while the OS
+  handles them, which would make the ANTIC read the ROM font for those scanlines
+  (a band of the old characters across the screen); so on this target a DLI is
+  served straight from the NMI vector, without the ROM.  For the same reason the
+  screen code makes no OS call that can last: a blocking `cgetc()` (the program waits
+  for the key in the stopped state) kept the ROM on and the Atari characters came
+  back until the key was pressed, so the program polls `kbhit()` and clears the
+  screen by itself instead of `clrscr()`.  The one OS call left, `cgetc()` once a key
+  is there, is short.
+- 400/800 (`atari` target): the linker keeps 2 KB at the top of RAM free
+  (`__RESERVED_MEMORY__`) and the font, which has to sit on a 1 KB boundary, goes
+  in the aligned KB of that block; `CHBAS` points to it.  The OS font is copied
+  from the ROM first if there is no C64 font.
 
 ### Which Atari
 
@@ -118,18 +162,18 @@ conversion that comes out silent is reported with a warning.
 
 ## Stream and player
 
-`song.bin` has a header of 7 + 3 bytes per register (AUDCTL, frame rate, frames,
-records per frame, AUDCTL of the second POKEY, number of POKEYs, and for each of
-the 8 or 16 POKEY registers either a constant or the offset of its stream), then one LZ stream per register that changes, each with one value per
-record.  Tokens come in groups of 8 behind a flag byte: a literal is one byte, a
+`song.bin` has a header of 109 + 3 bytes per register (AUDCTL, frame rate, frames,
+records per frame, AUDCTL of the second POKEY, number of POKEYs, the register of
+each voice's volume for the VU meters, title, author and copyright, and for each of
+the 8 or 16 POKEY registers either a constant or the offset of its stream), then
+one LZ stream per register that changes, each with one value per record.  Tokens come in groups of 8 behind a flag byte: a literal is one byte, a
 match is two bytes (9 bit offset, length 3 to 130) into that register's own
 last 512 values.  The format is described in the comment at the top of
 `tools/sidconv.c`, which also decodes every stream it writes the way the player
 does and refuses to write it if the result is not identical.
 
 The player keeps a 512 byte ring buffer per register (8 KB of RAM for the 16
-registers of two POKEYs), decodes one
-value per register per record and writes them all to POKEY in one burst, so that
+registers of two POKEYs), decodes one value per register per record and writes them all to POKEY in one burst, so that
 channels and 16 bit pairs change together.  A decode takes in the order of a
 thousand cycles per record (not measured), which is why even 4 records per frame
 fit comfortably.  At the end the decoders are reset and the tune loops.

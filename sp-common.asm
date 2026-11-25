@@ -23,6 +23,9 @@
 .export _play_k
 .export _play_chips
 .export _have_stereo
+.export _outbuf = outbuf		; the values of the last record, for the VU meters
+.export _play_left = left		; frames still to play
+.export _play_frames = frames		; frames in the stream
 
 .import song_data			; sp-data.asm
 
@@ -41,8 +44,10 @@ random2 = $d21a
 audctl2 = $d218
 skctl2  = $d21f
 nmien   = $d40e				; bit 7 DLI, bit 6 VBI
+nmist   = $d40f				; bit 7: the NMI is a DLI
+nmivec  = $fffa				; hardware NMI vector (RAM on atarixl)
 
-HDR_REGS = 7				; header: register table (3 bytes per register)
+HDR_REGS = 109				; header: register table (3 bytes per register)
 RING_SIZE = 16 * 512
 
 .zeropage
@@ -60,6 +65,7 @@ _play_k:	.res 1			; records per video frame (stream header)
 _play_chips:	.res 1			; POKEYs the stream is written for (1 or 2)
 _have_stereo:	.res 1			; $80 when a second POKEY answers at $D210
 old_vdslst:	.res 2
+old_nmi:	.res 2
 frames:		.res 2			; frames in the stream
 left:		.res 2			; frames still to play
 pos_lo:		.res 1			; position in the rings (0..511)
@@ -140,6 +146,7 @@ ring:		.res RING_SIZE + 255
 	bne @lz
 	lda song_data+HDR_REGS+1,y	; constant: write it once
 	ldx reg
+	sta outbuf,x			; (and keep it for the VU meters)
 	jsr putreg
 	jmp @next
 @lz:	ldx reg
@@ -194,6 +201,29 @@ ring:		.res RING_SIZE + 255
 @set:
 	lda #7				; deferred VBI vector
 	jsr SETVBV
+.ifdef __ATARIXL__
+	; The OS ROM is switched off while the program runs, and the NMI wrapper of
+	; cc65 switches it on for as long as the OS DLI dispatcher and our handler
+	; take: the ANTIC would read the ROM character set instead of the RAM one for
+	; those scanlines.  So a DLI is served here, straight from the NMI vector,
+	; and everything else (the VBI) goes on to the original vector.
+	lda _play_k
+	cmp #2
+	bcc @done
+	lda #0
+	sta nmien			; no NMI while the vector changes
+	lda nmivec
+	sta old_nmi
+	lda nmivec+1
+	sta old_nmi+1
+	lda #<nmi_dli
+	sta nmivec
+	lda #>nmi_dli
+	sta nmivec+1
+	lda #$40
+	sta nmien
+@done:
+.endif
 	rts
 .endproc
 
@@ -202,6 +232,14 @@ ring:		.res RING_SIZE + 255
 	lda _play_k
 	cmp #2
 	bcc @vbi
+.ifdef __ATARIXL__
+	lda #0				; no NMI while the vector changes
+	sta nmien
+	lda old_nmi
+	sta nmivec
+	lda old_nmi+1
+	sta nmivec+1
+.endif
 	lda #$40			; DLI off
 	sta nmien
 	lda old_vdslst
@@ -270,6 +308,7 @@ putreg:
 silence:
 	ldx #15
 :	lda #0
+	sta outbuf,x
 	jsr putreg
 	dex
 	bpl :-
@@ -429,7 +468,28 @@ vbi:
 	jsr playrec
 	jmp XITVBV
 
-; Display list interrupt: next record of the frame.
+.ifdef __ATARIXL__
+; NMI vector while a multispeed tune plays (atarixl): a DLI is played here,
+; anything else goes to the original handler.
+nmi_dli:
+	bit nmist
+	bpl @other			; bit 7 clear: not a DLI
+	pha
+	txa
+	pha
+	tya
+	pha
+	jsr playrec
+	pla
+	tay
+	pla
+	tax
+	pla
+	rti
+@other:	jmp (old_nmi)
+.endif
+
+; Display list interrupt (through the OS vector): next record of the frame.
 dli:
 	pha
 	txa
