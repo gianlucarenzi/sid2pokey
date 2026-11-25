@@ -42,10 +42,10 @@ def ch3(S):
         ["$06", "2", "dataOffset ($76 o $7C)", "inizio dei dati"],
         ["$08", "2", "loadAddress", "0 = i primi due byte dei dati (little endian) sono l'indirizzo"],
         ["$0A", "2", "initAddress", "0 = brano pilotato da BASIC: non supportato"],
-        ["$0C", "2", "playAddress", "0 = il brano installa un proprio IRQ (par. 4.3)"],
+        ["$0C", "2", "playAddress", "0 = il brano installa un proprio IRQ (par. 4.2)"],
         ["$0E", "2", "songs", "numero di brani nel file"],
         ["$10", "2", "startSong", "brano predefinito (opzione <font face=\"Mono\">-s</font>)"],
-        ["$12", "4", "speed", "un bit per brano: 0 = VBI, 1 = timer CIA (par. 4.4)"],
+        ["$12", "4", "speed", "un bit per brano: 0 = VBI, 1 = timer CIA (par. 4.3)"],
         ["$16", "32", "titolo", "mostrato nella schermata"],
         ["$36", "32", "autore", "mostrato nella schermata"],
         ["$56", "32", "copyright («released»)", "mostrato nella schermata"],
@@ -60,7 +60,7 @@ def ch3(S):
     P(S, "Il bit di <i>speed</i> del brano scelto dice solo se il codice è chiamato dal quadro video "
          "(bit 0) o da un timer (bit 1); la frequenza vera la sceglie il brano stesso, programmando il timer A della "
          "CIA 1 (registri $DC04/$DC05) o l'interrupt di raster del VIC. Per questo il convertitore non si fida del solo "
-         "bit: esegue <font face=\"Mono\">init</font> e poi guarda cosa ha programmato (tabella 4.2). I brani "
+         "bit: esegue <font face=\"Mono\">init</font> e poi guarda cosa ha programmato (tabella 4.3). I brani "
          "<b>multispeed</b> sono quelli con una frequenza di play multipla del quadro: 100, 150, 200 Hz.")
     section(S, "Due e tre SID")
     P(S, "La versione 3 dell'header aggiunge l'indirizzo di un secondo SID, la 4 quello di un terzo. L'indirizzo è "

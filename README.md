@@ -13,9 +13,10 @@ byte per video frame) is linked into the Atari binary together with a small VBI
 player (`sp-common.asm`) that decodes it on the fly.  A C64 style text screen with
 the title of the tune and a VU meter per voice is drawn by `sid2pokey.c`.
 
-A step by step guide in Italian (54 pages, with tables, screenshots and diagrams)
-is in [`doc/sid2pokey-guida.pdf`](doc/sid2pokey-guida.pdf), and `skeleton/` holds
-the smallest possible player to start from.
+A step by step guide (54 pages, with tables, screenshots and diagrams) is in
+[`doc/sid2pokey-guide.pdf`](doc/sid2pokey-guide.pdf) (English) and
+[`doc/sid2pokey-guida.pdf`](doc/sid2pokey-guida.pdf) (Italian), and `skeleton/`
+holds the smallest possible player to start from.
 
 ## Contents of the repository
 
@@ -30,7 +31,7 @@ the smallest possible player to start from.
 | `Makefile` | builds everything (see below) |
 | `skeleton/` | the minimal player: one POKEY, one record per frame, no compression, with its converter of `sidconv -d` dumps |
 | `tests/opcodes/` | test of the 6502 core against VICE x64sc (generator, driver, reference, script) |
-| `doc/` | the PDF guide and what builds it (`build_pdf.py`, one module per chapter, `img/`, `examples/`) |
+| `doc/` | the PDF guide in Italian and English and what builds it (`build_pdf.py`, one module per chapter, the English ones in `en/`, `img/`, `examples/`) |
 | `sid2gumby/` | the older project this one grew out of (Ivo van Poorten, GPL 3), kept as it was imported |
 | `LICENSE` | GPL 3 |
 
@@ -287,17 +288,21 @@ adds: 16 bit pairs, multispeed, two POKEYs, compression, the screen.
 
 ## Documentation
 
-`doc/sid2pokey-guida.pdf` (Italian) goes through the whole thing: SID and POKEY,
-the PSID format, how `sidconv` works, the stream, the player, the screen and the
-font, the skeleton step by step, how it was verified, a table of the traps met on
-the way, and appendices with the addresses, the commands, the formulas and a
-glossary.  To rebuild it:
+`doc/sid2pokey-guide.pdf` (English) and `doc/sid2pokey-guida.pdf` (Italian, the
+original) go through the whole thing: SID and POKEY, the PSID format, how `sidconv`
+works, the stream, the player, the screen and the font, the skeleton step by step,
+how it was verified, a table of the traps met on the way, and appendices with the
+addresses, the commands, the formulas and a glossary.  To rebuild them:
 
-    python3 doc/build_pdf.py
+    python3 doc/build_pdf.py              # Italian: doc/sid2pokey-guida.pdf
+    python3 doc/build_pdf.py --lang en    # English: doc/sid2pokey-guide.pdf
 
-It needs python3, reportlab and the DejaVu fonts (`/usr/share/fonts/truetype/dejavu/`).
+They need python3, reportlab and the DejaVu fonts (`/usr/share/fonts/truetype/dejavu/`).
 The listings are read from the sources of the repository, the screenshots from
-`doc/img/` (taken from atari800).
+`doc/img/` (taken from atari800).  The layout code (`doc/pdflib.py`) is shared; the
+text of each chapter lives in `doc/ch_*.py` (Italian) and `doc/en/ch_*.py` and
+`doc/en/diagrams.py` (English), with the same structure, so a change to one version
+has to be repeated in the other.
 
 ## Checked so far
 

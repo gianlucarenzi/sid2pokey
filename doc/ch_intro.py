@@ -272,8 +272,8 @@ def ch2(S):
                              "del 20 %. Il convertitore ricampiona nel tempo reale (opzione <font face=\"Mono\">-p</font>) "
                              "e il programma avverte se lo stream e la macchina non hanno la stessa frequenza.")
     section(S, "Il secondo POKEY")
-    P(S, "Le schede stereo per Atari aggiungono un secondo POKEY a <b>$D210-$D21F</b> (uno solo scrive "
-         "AUDF1 a $D210, AUDCTL a $D218). Senza la scheda quegli indirizzi sono uno <b>specchio</b> del primo chip: una "
+    P(S, "Le schede stereo per Atari aggiungono un secondo POKEY a <b>$D210-$D21F</b> (gli stessi registri del "
+         "primo, 16 byte più in alto: AUDF1 a $D210, AUDCTL a $D218). Senza la scheda quegli indirizzi sono uno <b>specchio</b> del primo chip: una "
          "scrittura a $D210 finisce in AUDF1 del POKEY 1. Per questo il player non scrive mai nel secondo POKEY senza "
          "averne verificato la presenza (capitolo 6).")
     figure(S, "ui_dual_xe.png", "Figura 2.1 — Un brano a due SID sull'XE emulato con due POKEY: due gruppi di "

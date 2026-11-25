@@ -52,6 +52,12 @@ CALLOUT = {
     "TRAPPOLA":    (colors.HexColor("#B02A37"), colors.HexColor("#FDEBED")),
     "VERIFICATO":  (colors.HexColor("#5B3FA5"), colors.HexColor("#F0EBFB")),
 }
+# the same boxes under their English names (doc/en/ uses these)
+CALLOUT["NOTE"] = CALLOUT["NOTA"]
+CALLOUT["TIP"] = CALLOUT["CONSIGLIO"]
+CALLOUT["WARNING"] = CALLOUT["ATTENZIONE"]
+CALLOUT["PITFALL"] = CALLOUT["TRAPPOLA"]
+CALLOUT["VERIFIED"] = CALLOUT["VERIFICATO"]
 
 PAGE_W, PAGE_H = A4
 MARGIN_X = 20 * mm

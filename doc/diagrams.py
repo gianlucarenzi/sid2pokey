@@ -288,7 +288,7 @@ class Layouts(Diagram):
             self.text(x0, 50, "AUDF = divisore, AUDC = distorsione + volume", 6.6, "Sans", GREY)
         self.text(4, 32, "Ogni voce SID va su un canale (o su una coppia): la scelta si fa per ciascun SID sul brano intero,",
                   7, "Sans", INK)
-        self.text(4, 21, "calcolando l'errore di intonazione medio di ogni disposizione (8 candidate, tabella a pagina seguente).",
+        self.text(4, 21, "calcolando l'errore di intonazione medio di ogni disposizione (8 candidate, tabella 4.6).",
                   7, "Sans", INK)
 
 

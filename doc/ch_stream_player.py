@@ -224,7 +224,7 @@ def ch6(S):
         ["NTSC", "4", "3", "182", "riga di testo 18", "183", "1"],
     ], [20, 10, 12, 32, 42, 26, 28], align="LCCRLRR", font=7.8, keep=True,
           caption="Tabella 6.3 — Dove cadono i DLI nella display list standard. L'errore massimo è di 4 scanline "
-                  "(circa 0,5 ms a 50 Hz): non si sente.")
+                  "(circa 0,25 ms a 50 Hz): non si sente.")
     code(S, excerpt("sid2pokey.c", "static void patchDisplayList(", "dli_ins[dli_n++] = ins_p[best];") + "\n\t}\n}",
          title="sid2pokey.c — patchDisplayList(): sceglie le istruzioni a cui dare il DLI", size=6.8)
     callout(S, "TRAPPOLA", "<b>I DLI devono partire solo dopo il primo VBI.</b> I record di un quadro si suonano sempre nell'ordine "
