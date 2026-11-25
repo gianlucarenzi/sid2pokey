@@ -7,9 +7,9 @@ SID files are 6502 code plus data, not audio.  `tools/sidconv` runs the tune's
 `init`/`play` routines on a 6502 emulator, records what it writes to the SID
 registers on every call, models the three SID voices (pitch, waveform, ADSR) and
 maps them to POKEY `AUDF`/`AUDC` registers, one Atari video frame at a time.
-The result (`song.bin`, a delta-coded register stream, about 3 bytes per frame)
-is linked into the Atari binary together with a small VBI player
-(`sp-common.asm`).
+The result (`song.bin`, one LZ-compressed stream per POKEY register, about 1
+byte per video frame) is linked into the Atari binary together with a small VBI
+player (`sp-common.asm`) that decodes it on the fly.
 
 ## Build
 
@@ -26,8 +26,9 @@ Requires cc65 and a host C compiler.  The converter alone:
     tools/sidconv -k 1 ...                                      # force 1-4 records per video frame (default: from the tune)
 
 `DURATION` is needed because a SID file has no length.  The stream must stay
-under about 40 KB to fit in memory: roughly 3 minutes of an ordinary tune, but
-only about 90 seconds of a 4x one (the converter warns).
+under about 30 KB to fit in a 48 KB machine next to the player (which needs about
+10 KB, rings included); the converter warns.  That is many minutes of music: 5
+minutes of a 4x tune take 16 KB.
 
 On the Atari, a key press stops the tune and the next one plays it again from the
 start; the program never returns to DOS (without a DOS the XL/XE would end in a
@@ -76,6 +77,27 @@ filter, ring modulation, sync, pulse width, sampled digi
 other than the interrupt exits, a few unstable undocumented 6502 opcodes.  A
 conversion that comes out silent is reported with a warning.
 
+## Stream and player
+
+`song.bin` has a 29 byte header (AUDCTL, frame rate, frames, records per frame,
+and for each of the 8 POKEY registers either a constant or the offset of its
+stream), then one LZ stream per register that changes, each with one value per
+record.  Tokens come in groups of 8 behind a flag byte: a literal is one byte, a
+match is two bytes (9 bit offset, length 3 to 130) into that register's own
+last 512 values.  The format is described in the comment at the top of
+`tools/sidconv.c`, which also decodes every stream it writes the way the player
+does and refuses to write it if the result is not identical.
+
+The player keeps a 512 byte ring buffer per register (4 KB of RAM), decodes one
+value per register per record and writes them all to POKEY in one burst, so that
+channels and 16 bit pairs change together.  A decode takes in the order of a
+thousand cycles per record (not measured), which is why even 4 records per frame
+fit comfortably.  At the end the decoders are reset and the tune loops.
+
+Planar streams were chosen after measuring the alternatives on 31 tunes (every
+register as raw values or as deltas, LZ windows of 256, 512 and 1024 values):
+raw values with a 512 window were the smallest, so no delta arithmetic is needed.
+
 ## Checked so far
 
 - Commando (Rob Hubbard) converted and played in atari800 on the Atari 800 and
@@ -97,6 +119,12 @@ conversion that comes out silent is reported with a warning.
   and 4x checked with one sample per frame (838 frames in step).
 - Of the 4370 tunes, 199 convert with 2 or more records per frame (120 at 2x, 11
   at 3x, 68 at 4x or faster).
+- Compression, 31 tunes of 45 s: 238 KB in the previous mask/delta format, 38 KB
+  now (6.2x smaller; per tune from 3.8x to 13.3x, median 6.7x; 60 s of Commando
+  take 2 KB, 60 s of the 4x tune 3.5 KB).
+- The LZ player was run in atari800 on the Atari 800 and the XE: 1x, 2x, 3x and 4x
+  PAL and 2x NTSC give the converter's records exactly, the stream loops over
+  several wraps, and stop / play again restarts from the first record.
 - Not checked by ear: how it actually sounds.
 
 ## Notes

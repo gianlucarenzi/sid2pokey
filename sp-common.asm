@@ -2,12 +2,18 @@
 ; multispeed tunes, by display list interrupts).
 ;
 ; Replays the stream produced by tools/sidconv (see the format description
-; at the top of tools/sidconv.c).  A video frame holds play_k records; each
-; record is a mask byte followed by one byte for every register ($D200+n)
-; whose mask bit is set.  The deferred VBI plays the first record of a frame;
-; when play_k > 1 the display list carries DLI bits (patched by sid2pokey.c)
-; and the DLI handler plays the other records, in order.  When the end of the
-; stream is reached (checked at the VBI) it restarts from the beginning.
+; at the top of tools/sidconv.c): one LZ-compressed stream per POKEY register
+; that changes, one value per register per record.  A video frame holds
+; play_k records.  The deferred VBI plays the first record of a frame; when
+; play_k > 1 the display list carries DLI bits (patched by sid2pokey.c) and the
+; DLI handler plays the other records, in order.  When the last frame has been
+; played (checked at the VBI) every decoder is reset and the tune restarts.
+;
+; Decoder, per register: a flag byte (read bit 7 first, a sentinel bit tells
+; when it is empty) tells whether the next token is a literal (one byte) or a
+; match (two bytes: offset bits 0-7; then bit 7 = offset bit 8, bits 0-6 =
+; length - 3).  Every decoded value goes to a 512 byte ring buffer of the
+; register (all registers share the position pos) and to POKEY.
 
 .export _initPlayer
 .export _startPlayer
@@ -15,7 +21,6 @@
 .export _play_k
 
 .import song_data			; sp-data.asm
-.import song_end
 
 ; SETVBV (OS: A=6 immediate / 7 deferred VBI vector) and XITVBV (OS: exit from
 ; a VBI routine) come from atari.inc.  On the atarixl target cc65 keeps the OS
@@ -28,34 +33,109 @@ audf1  = $d200				; AUDF1 AUDC1 AUDF2 AUDC2 ... AUDF4 AUDC4
 audctl = $d208
 nmien  = $d40e				; bit 7 DLI, bit 6 VBI
 
-HEADER = 5				; AUDCTL, video_hz, frames (16 bit), play_k
+HDR_REGS = 5				; header: register table (8 x 3 bytes)
+RING_SIZE = 8 * 512
 
 .zeropage
-ptr:	.res 2				; read pointer into the stream
-mask:	.res 1
+sptr:	.res 2				; compressed stream pointer
+wp:	.res 2				; ring write pointer (low byte always 0)
+rp:	.res 2				; ring read pointer  (low byte always 0)
+tmp:	.res 1
+tmp2:	.res 1
+tmp3:	.res 1
+ri:	.res 1				; index in reglist
+reg:	.res 1
 
 .bss
 _play_k:	.res 1			; records per video frame (stream header)
 old_vdslst:	.res 2
-
-.macro nextbyte				; A = (ptr)++   (clobbers Y)
-	ldy #0
-	lda (ptr),y
-	inc ptr
-	bne :+
-	inc ptr+1
-:
-.endmacro
+frames:		.res 2			; frames in the stream
+left:		.res 2			; frames still to play
+pos_lo:		.res 1			; position in the rings (0..511)
+pos_hi:		.res 1
+nl:		.res 1
+ring_hi:	.res 1			; page of the first (page aligned) ring
+reglist:	.res 9			; registers that have a stream, then $ff
+outbuf:		.res 8			; values of the current record, per register
+start_lo:	.res 8			; stream start per register
+start_hi:	.res 8
+st_lo:		.res 8			; stream read pointer per register
+st_hi:		.res 8
+fl:		.res 8			; flag shift register
+cnt:		.res 8			; values left in the current match
+srcl:		.res 8			; match source position in the ring
+srch:		.res 8
+rhi:		.res 8			; page of the ring of each register
+ring:		.res RING_SIZE + 255
 
 .segment "CODE"
 
 ; void initPlayer(void);   no interrupts are touched
 .proc _initPlayer
 	jsr silence
-	lda song_data			; header byte 0: AUDCTL
+	lda song_data			; header: AUDCTL
 	sta audctl
-	lda song_data+4			; header byte 4: records per frame
+	lda song_data+2			; frames
+	sta frames
+	lda song_data+3
+	sta frames+1
+	lda song_data+4			; records per frame
 	sta _play_k
+
+	lda #0				; the rings are page aligned
+	sta wp
+	sta rp
+	lda #<ring
+	beq @aligned
+	lda #>ring
+	clc
+	adc #1
+	jmp @sethi
+@aligned:
+	lda #>ring
+@sethi:
+	sta ring_hi
+	ldx #0
+@rh:	sta rhi,x			; ring r: ring_hi + 2 * r
+	clc
+	adc #2
+	inx
+	cpx #8
+	bne @rh
+
+	lda #0				; register table
+	sta nl
+	sta reg
+	tay				; Y = header offset of the register
+@reg:
+	lda song_data+HDR_REGS,y
+	bne @lz
+	lda song_data+HDR_REGS+1,y	; constant: write it once
+	ldx reg
+	sta audf1,x
+	jmp @next
+@lz:	ldx reg
+	clc
+	lda song_data+HDR_REGS+1,y	; stream offset -> address
+	adc #<song_data
+	sta start_lo,x
+	lda song_data+HDR_REGS+2,y
+	adc #>song_data
+	sta start_hi,x
+	txa
+	ldx nl
+	sta reglist,x
+	inc nl
+@next:	iny
+	iny
+	iny
+	inc reg
+	lda reg
+	cmp #8
+	bne @reg
+	ldx nl
+	lda #$ff
+	sta reglist,x
 	jmp rewind
 .endproc
 
@@ -119,30 +199,142 @@ silence:
 	bpl :-
 	rts
 
+; Reset every decoder and start from the first frame.
 rewind:
-	lda #<(song_data + HEADER)
-	sta ptr
-	lda #>(song_data + HEADER)
-	sta ptr+1
+	ldx #7
+@l:	lda start_lo,x
+	sta st_lo,x
+	lda start_hi,x
+	sta st_hi,x
+	lda #0
+	sta fl,x
+	sta cnt,x
+	dex
+	bpl @l
+	lda #0
+	sta pos_lo
+	sta pos_hi
+	lda frames
+	sta left
+	lda frames+1
+	sta left+1
 	rts
 
-; Play one record.  Clobbers A, X, Y.
+; Play one record: decode the next value of every register that has a stream,
+; then write them all to POKEY in one burst (so that a 16 bit pair and the
+; channels change together).  Clobbers A, X, Y.
 playrec:
-	nextbyte			; register mask
-	sta mask
-	ldx #0
+	lda #0
+	sta ri
 @next:
-	lda mask
-	beq @done
-	lsr mask			; bit 0 -> carry
-	bcc @skip
-	nextbyte
+	ldx ri
+	lda reglist,x
+	bmi @burst
+	tax
+	jsr decode
+	inc ri
+	bne @next			; at most 8 registers: always taken
+@burst:	ldy #0
+@w:	ldx reglist,y
+	bmi @done
+	lda outbuf,x
 	sta audf1,x
-@skip:
-	inx
-	bne @next			; X <= 8 here, so always taken
+	iny
+	bne @w				; at most 8 registers: always taken
 @done:
+	inc pos_lo
+	bne @ret
+	lda pos_hi
+	eor #1
+	sta pos_hi
+@ret:	rts
+
+; X = register.  Decode its next value, put it in its ring and in outbuf.
+decode:
+	lda cnt,x
+	beq @token
+	dec cnt,x			; inside a match
+@copy:	lda rhi,x			; value = ring[source]
+	clc
+	adc srch,x
+	sta rp+1
+	ldy srcl,x
+	lda (rp),y
+	sta tmp
+	inc srcl,x			; source = (source + 1) mod 512
+	bne @out
+	lda srch,x
+	eor #1
+	sta srch,x
+@out:	lda rhi,x			; ring[pos] = value
+	clc
+	adc pos_hi
+	sta wp+1
+	ldy pos_lo
+	lda tmp
+	sta (wp),y
+	sta outbuf,x
 	rts
+
+@token:	lda st_lo,x
+	sta sptr
+	lda st_hi,x
+	sta sptr+1
+	asl fl,x			; next flag -> carry
+	bne @have
+	ldy #0				; empty: reload the flag byte
+	lda (sptr),y
+	inc sptr
+	bne @fl1
+	inc sptr+1
+@fl1:	sec				; carry = first flag, bit 0 = sentinel
+	rol a
+	sta fl,x
+@have:	bcc @match
+
+	ldy #0				; literal
+	lda (sptr),y
+	sta tmp
+	inc sptr
+	bne @save
+	inc sptr+1
+@save:	lda sptr
+	sta st_lo,x
+	lda sptr+1
+	sta st_hi,x
+	jmp @out
+
+@match:	ldy #0
+	lda (sptr),y			; offset bits 0-7
+	sta tmp2
+	iny
+	lda (sptr),y			; bit 7: offset bit 8, bits 0-6: length - 3
+	pha
+	asl a
+	lda #0
+	rol a
+	sta tmp3			; offset bit 8
+	pla
+	and #$7f
+	clc
+	adc #2				; values left after this one: length - 1
+	sta cnt,x
+	clc				; advance the stream pointer by 2
+	lda sptr
+	adc #2
+	sta st_lo,x
+	lda sptr+1
+	adc #0
+	sta st_hi,x
+	sec				; source = (pos - offset) mod 512
+	lda pos_lo
+	sbc tmp2
+	sta srcl,x
+	lda pos_hi
+	sbc tmp3
+	and #1
+	sta srch,x
+	jmp @copy
 
 ; Deferred VBI: first record of the frame.  vbim (multispeed) also makes
 ; sure the DLIs are on, in step with this frame.
@@ -150,16 +342,14 @@ vbim:
 	lda #$c0			; VBI + DLI
 	sta nmien
 vbi:
-	lda ptr+1			; end of stream? -> loop
-	cmp #>song_end
-	bcc @play			; below the end
-	bne @loop			; beyond it (must not happen)
-	lda ptr
-	cmp #<song_end
-	bcc @play
-@loop:
+	lda left			; all frames played? -> start again
+	ora left+1
+	bne @go
 	jsr rewind
-@play:
+@go:	lda left
+	bne @dec
+	dec left+1
+@dec:	dec left
 	jsr playrec
 	jmp XITVBV
 

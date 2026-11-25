@@ -10,18 +10,24 @@
  *
  * Output stream format (all values bytes):
  *
- *   header:  AUDCTL, video_hz (50|60), frames (16 bit little endian),
- *            subframes (1..4)
- *   record:  mask, then one byte for each set bit of mask
- *            bit n of mask -> register $D200+n:
- *              AUDF1 AUDC1 AUDF2 AUDC2 AUDF3 AUDC3 AUDF4 AUDC4
- *            registers whose bit is clear keep their previous value.
+ *   header (29 bytes):
+ *     AUDCTL, video_hz (50|60), frames (16 bit little endian),
+ *     records per video frame (1..4),
+ *     then for each of the 8 registers (AUDF1 AUDC1 AUDF2 AUDC2 ... AUDC4):
+ *       0, value, 0              the register never changes
+ *       1, offset (16 bit)       offset of its LZ stream from the file start
+ *   one LZ stream per changing register, each holding frames x records
+ *   values (one per record):
+ *     groups of a flag byte followed by up to 8 tokens; the flags are read
+ *     from bit 7 down: 1 = literal (one byte), 0 = match (two bytes:
+ *     offset bits 0-7, then bit 7 = offset bit 8 and bits 0-6 = length - 3).
+ *     A match copies length (3..130) values starting offset (1..512, 0 means
+ *     512) values back in that register's own history.
  *
- * A video frame holds `subframes` consecutive records: the player plays the
+ * A video frame holds `records` consecutive records: the player plays the
  * first from the vertical blank and the others from display list interrupts
- * spread evenly over the frame (multispeed tunes).  The first record always
- * writes all eight registers, so the stream can be looped by simply
- * restarting from the beginning.
+ * spread evenly over the frame (multispeed tunes).  The decoder state of
+ * every stream is reset when the end is reached, so the tune loops.
  *
  * Current mapping (see the README for what is still missing):
  *   - The converter tries several layouts of the three SID voices on the
@@ -607,58 +613,218 @@ static void put_voice(const config_t *cf, const clocks_t *ck, int v,
 
 /* ------------------------------ stream ----------------------------- */
 
-static size_t stream_encode(const uint8_t (*fr)[8], int n, uint8_t audctl,
-			    int video_hz, int frames, int sub, uint8_t *out)
+#define HDR_SIZE	29
+#define LZ_WINDOW	512
+#define LZ_MINLEN	3
+#define LZ_MAXLEN	130
+
+/*
+ * LZ stream of one register: s[0..n-1] -> out.  Optimal parse for the cost
+ * model "flag bit + 8 bits per literal, flag bit + 16 bits per match".
+ * Returns the number of bytes written.
+ */
+static size_t lz_encode(const uint8_t *s, int n, uint8_t *out)
 {
-	int last[8], i, r;
-	size_t pos = 0;
+	long *dp = malloc(((size_t)n + 1) * sizeof *dp);
+	short *clen = malloc(((size_t)n + 1) * sizeof *clen);
+	short *coff = malloc(((size_t)n + 1) * sizeof *coff);
+	uint8_t tok[16];
+	size_t pos = 0, flagpos = 0;
+	int i, off, l, k, ntok = 0, tlen = 0;
+	unsigned flags = 0;
 
-	out[pos++] = audctl;
-	out[pos++] = (uint8_t)video_hz;
-	out[pos++] = (uint8_t)(frames & 0xFF);
-	out[pos++] = (uint8_t)(frames >> 8);
-	out[pos++] = (uint8_t)sub;
-	for (r = 0; r < 8; r++)
-		last[r] = -1;
-	for (i = 0; i < n; i++) {
-		size_t mpos = pos++;
-		uint8_t mask = 0;
+	if (!dp || !clen || !coff)
+		die("out of memory");
+	dp[n] = 0;
+	for (i = n - 1; i >= 0; i--) {
+		int maxoff = i < LZ_WINDOW ? i : LZ_WINDOW;
+		int bestl = 0, bestoff = 0;
+		long best = 9 + dp[i + 1];
+		int bl = 0;
 
-		for (r = 0; r < 8; r++) {
-			if (fr[i][r] != last[r]) {
-				mask |= (uint8_t)(1 << r);
-				out[pos++] = fr[i][r];
-				last[r] = fr[i][r];
+		for (off = 1; off <= maxoff; off++) {
+			l = 0;
+			while (i + l < n && l < LZ_MAXLEN && s[i + l] == s[i + l - off])
+				l++;
+			if (l > bestl) {
+				bestl = l;
+				bestoff = off;
+				if (l == LZ_MAXLEN)
+					break;
 			}
 		}
-		out[mpos] = mask;
+		for (k = LZ_MINLEN; k <= bestl; k++) {
+			long c = 17 + dp[i + k];
+			if (c < best) {
+				best = c;
+				bl = k;
+			}
+		}
+		dp[i] = best;
+		clen[i] = (short)bl;
+		coff[i] = (short)bestoff;
 	}
+
+	/* emit: a flag byte, then its (up to 8) tokens */
+	for (i = 0; i < n; ) {
+		if (ntok == 0) {
+			flagpos = pos++;
+			flags = 0;
+			tlen = 0;
+		}
+		if (clen[i] == 0) {
+			flags = flags << 1 | 1;
+			tok[tlen++] = s[i];
+			i++;
+		} else {
+			int o = coff[i] & (LZ_WINDOW - 1);
+			flags = flags << 1;
+			tok[tlen++] = (uint8_t)(o & 0xFF);
+			tok[tlen++] = (uint8_t)((o >> 8) << 7 | (clen[i] - LZ_MINLEN));
+			i += clen[i];
+		}
+		if (++ntok == 8 || i >= n) {
+			flags <<= 8 - ntok;
+			out[flagpos] = (uint8_t)flags;
+			memcpy(out + pos, tok, (size_t)tlen);
+			pos += (size_t)tlen;
+			ntok = 0;
+		}
+	}
+	free(dp);
+	free(clen);
+	free(coff);
 	return pos;
 }
 
-/* Decode the stream exactly like the 6502 player does and compare. */
-static int stream_verify(const uint8_t *s, size_t len, const uint8_t (*fr)[8],
-			 int n)
+/*
+ * Whole stream: header, then the LZ stream of every register that changes.
+ * fr[i][r] is register r at record i.  Returns the size in bytes.
+ */
+static size_t stream_encode(const uint8_t (*fr)[8], int nrec, uint8_t audctl,
+			    int video_hz, int frames, int sub, uint8_t *out)
 {
-	uint8_t reg[8] = { 0 };
-	size_t pos = 5;
+	uint8_t *col = malloc((size_t)nrec);
+	size_t pos = HDR_SIZE;
+	int r, i;
+
+	if (!col)
+		die("out of memory");
+	out[0] = audctl;
+	out[1] = (uint8_t)video_hz;
+	out[2] = (uint8_t)(frames & 0xFF);
+	out[3] = (uint8_t)(frames >> 8);
+	out[4] = (uint8_t)sub;
+	for (r = 0; r < 8; r++) {
+		uint8_t *h = out + 5 + 3 * r;
+		int constant = 1;
+
+		for (i = 0; i < nrec; i++) {
+			col[i] = fr[i][r];
+			if (col[i] != fr[0][r])
+				constant = 0;
+		}
+		if (constant) {
+			h[0] = 0;
+			h[1] = fr[0][r];
+			h[2] = 0;
+			continue;
+		}
+		if (pos > 0xFFFF)
+			die("stream too large (64 KB limit)");
+		h[0] = 1;
+		h[1] = (uint8_t)(pos & 0xFF);
+		h[2] = (uint8_t)(pos >> 8);
+		pos += lz_encode(col, nrec, out + pos);
+	}
+	free(col);
+	return pos;
+}
+
+/* Size the previous format (mask byte + changed registers) would have had. */
+static size_t delta_size(const uint8_t (*fr)[8], int nrec)
+{
+	size_t n = 5;
 	int i, r;
 
-	for (i = 0; i < n; i++) {
-		uint8_t mask;
-		if (pos >= len)
-			return -1;
-		mask = s[pos++];
-		for (r = 0; mask; r++, mask >>= 1)
-			if (mask & 1) {
-				if (pos >= len)
-					return -1;
-				reg[r] = s[pos++];
-			}
-		if (memcmp(reg, fr[i], 8))
-			return -1;
+	for (i = 0; i < nrec; i++) {
+		n++;
+		for (r = 0; r < 8; r++)
+			if (i == 0 || fr[i][r] != fr[i - 1][r])
+				n++;
 	}
-	return pos == len ? 0 : -1;
+	return n;
+}
+
+/*
+ * Decode the stream the way the 6502 player does (one value per register per
+ * record, a ring buffer of LZ_WINDOW values per register, flags consumed with
+ * an "asl, reload when it becomes zero" shift register) and compare it with
+ * the original records.  Returns 0 if identical.
+ */
+static int stream_verify(const uint8_t *s, size_t len, const uint8_t (*fr)[8],
+			 int nrec)
+{
+	static uint8_t ring[8][LZ_WINDOW];
+	size_t sp[8];
+	unsigned fl[8] = { 0 };
+	int cnt[8] = { 0 }, src[8] = { 0 };
+	int i, r, pos = 0;
+
+	if (len < HDR_SIZE)
+		return -1;
+	for (r = 0; r < 8; r++)
+		sp[r] = (size_t)s[5 + 3 * r + 1] | (size_t)s[5 + 3 * r + 2] << 8;
+
+	for (i = 0; i < nrec; i++) {
+		for (r = 0; r < 8; r++) {
+			const uint8_t *h = s + 5 + 3 * r;
+			uint8_t v;
+
+			if (h[0] == 0) {
+				v = h[1];
+			} else if (cnt[r] > 0) {
+				cnt[r]--;
+				v = ring[r][src[r]];
+				src[r] = (src[r] + 1) & (LZ_WINDOW - 1);
+			} else {
+				int carry = (int)((fl[r] >> 7) & 1);	/* asl fl */
+
+				fl[r] = (fl[r] << 1) & 0xFF;
+				if (fl[r] == 0) {			/* reload */
+					uint8_t b;
+					if (sp[r] >= len)
+						return -1;
+					b = s[sp[r]++];
+					carry = b >> 7;			/* sec; rol a */
+					fl[r] = ((unsigned)b << 1 | 1) & 0xFF;
+				}
+				if (carry) {				/* literal */
+					if (sp[r] >= len)
+						return -1;
+					v = s[sp[r]++];
+				} else {				/* match */
+					int lo, hi, offhi, off9, l;
+					if (sp[r] + 1 >= len)
+						return -1;
+					lo = s[sp[r]++];
+					hi = s[sp[r]++];
+					offhi = hi >> 7;
+					off9 = lo | offhi << 8;
+					l = (hi & 0x7F) + LZ_MINLEN;
+					src[r] = (pos - off9) & (LZ_WINDOW - 1);
+					cnt[r] = l - 1;
+					v = ring[r][src[r]];
+					src[r] = (src[r] + 1) & (LZ_WINDOW - 1);
+				}
+			}
+			ring[r][pos] = v;
+			if (v != fr[i][r])
+				return -1;
+		}
+		pos = (pos + 1) & (LZ_WINDOW - 1);
+	}
+	return 0;
 }
 
 /* ------------------------------- main ------------------------------ */
@@ -867,7 +1033,7 @@ int main(int argc, char **argv)
 	pk = calloc((size_t)ncalls, 8);
 	vi = calloc((size_t)ncalls, sizeof *vi);
 	fr = calloc((size_t)nrec, 8);
-	stream = malloc((size_t)nrec * 9 + 5);
+	stream = malloc((size_t)nrec * 9 + 5 + HDR_SIZE);
 	if (!pk || !vi || !fr || !stream)
 		die("out of memory");
 	memset(vm, 0, sizeof vm);
@@ -959,9 +1125,12 @@ int main(int argc, char **argv)
 					break;
 				}
 		fprintf(stderr, "%s: %d frames x %d (%.1f s), %zu bytes "
-			"(%.1f bytes/frame), sound in %d%% of the frames\n",
+			"(%.1f bytes/frame; the uncompressed delta format "
+			"would be %zu), sound in %d%% of the frames\n",
 			outname, nframes, ksub, nframes / atari_hz, outlen,
-			(double)outlen / nframes, snd * 100 / nrec);
+			(double)outlen / nframes,
+			delta_size((const uint8_t (*)[8])fr, nrec),
+			snd * 100 / nrec);
 		if (snd == 0)
 			fprintf(stderr, "warning: the converted tune is silent%s\n",
 				nmi_handler(m) ? ": it installs an NMI handler "
@@ -969,8 +1138,8 @@ int main(int argc, char **argv)
 				: "; it probably needs something sidconv does "
 				"not emulate");
 	}
-	if (outlen > 40000)
-		fprintf(stderr, "warning: stream larger than 40 KB, it may not "
-			"fit in a 48 KB Atari\n");
+	if (outlen > 30000)
+		fprintf(stderr, "warning: stream larger than 30 KB, it may not "
+			"fit in a 48 KB Atari (the player needs about 10 KB)\n");
 	return 0;
 }

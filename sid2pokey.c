@@ -119,5 +119,4 @@ int main(void)
 		printf("Stopped.  Press a key to play again.\n");
 		cgetc();
 	}
-	return 0;
 }
