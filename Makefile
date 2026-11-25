@@ -8,6 +8,8 @@ ATRFOLDER ?= ~/ATARI/ATR
 ROM ?= ~/ATARI/ATARIXL.ROM
 ROMSWITCH ?= -xlxe_rom
 MACHINE ?= xe
+# second POKEY in the emulator, needed by dual SID tunes (harmless otherwise)
+STEREO ?= -stereo
 DEFINES ?= RETROBIT
 
 # SID -> POKEY conversion (see tools/sidconv.c)
@@ -33,6 +35,7 @@ EMUSWITCHES = \
 	-$(MACHINE) \
 	-scanlines 50 \
 	-scanlinesint \
+	$(STEREO) \
 	$(TARGETFILENAME)
 
 C_SOURCES = \
