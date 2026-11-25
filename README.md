@@ -49,7 +49,12 @@ Details:
 - Notes below the range of a divider are folded up by octaves.
 - Noise waveform -> distortion `$8x`, with the divider set from the SID noise
   LFSR clock (16 x pitch); every other waveform -> pure tone `$Ax`.
-- Volume = ADSR envelope (linear approximation, one step per play call) x master volume.
+- Volume = ADSR envelope x master volume.  The envelope follows the SID's own
+  generator (as in reSID): an 8 bit counter driven by a rate counter in SID clock
+  cycles, linear attack, and decay and release whose step time grows as the level
+  falls (periods 1, 2, 4, 8, 16, 30 below 255, 93, 54, 26, 14, 6), so notes drop
+  fast and then have a long tail.  The ADSR delay bug is not modelled.  The result
+  is quantized to the 16 POKEY volume levels, which cuts the very end of the tail.
 - The tempo follows real time: play calls are resampled to the Atari frame rate
   (PAL 49.86 Hz or NTSC 59.92 Hz).
 
@@ -119,6 +124,11 @@ raw values with a 512 window were the smallest, so no delta arithmetic is needed
   and 4x checked with one sample per frame (838 frames in step).
 - Of the 4370 tunes, 199 convert with 2 or more records per frame (120 at 2x, 11
   at 3x, 68 at 4x or faster).
+- The envelope model against the SID datasheet: attack 0 to 255 and release 255
+  to 0 for the 16 rates (2 ms to 8 s, 6 ms to 24 s) are within 4% (within 2% from
+  rate 4 up; rate 0 is 2.3 ms against the datasheet's rounded 2 ms), and the level
+  stops at the sustain value.  Streams are about 4% larger than with the old
+  linear model (39.8 KB against 38.1 KB on the 31 tunes below).
 - Compression, 31 tunes of 45 s: 238 KB in the previous mask/delta format, 38 KB
   now (6.2x smaller; per tune from 3.8x to 13.3x, median 6.7x; 60 s of Commando
   take 2 KB, 60 s of the 4x tune 3.5 KB).

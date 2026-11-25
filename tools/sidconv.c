@@ -38,7 +38,7 @@
  *   - pitch below the divider range is folded up by octaves.
  *   - noise waveform -> distortion $8x (17 bit poly), everything else
  *     -> pure tone $Ax.  Filter, ring modulation, sync and PWM are ignored.
- *   - volume = ADSR envelope (frame-rate approximation) * master volume.
+ *   - volume = ADSR envelope (the SID's rate and exponential counters) * master volume.
  *   - multispeed tunes are decimated to one play call per video frame.
  */
 #include <stdio.h>
@@ -369,61 +369,104 @@ static int irq_handler(const machine_t *m, int *kernal)
 
 /* --------------------------- voice model --------------------------- */
 
-enum { ENV_IDLE, ENV_ATTACK, ENV_DECAY, ENV_SUSTAIN, ENV_RELEASE };
+/*
+ * SID envelope generator (as in reSID): an 8 bit envelope counter and a rate
+ * counter that ticks once per SID clock cycle.  When it reaches the period of
+ * the current state (attack, decay or release rate) the envelope may step:
+ *   attack          every tick, counter + 1 (linear), up to 255, then decay;
+ *   decay, release  every `exp_period` ticks, counter - 1 (exponential): the
+ *                   period changes to 1, 2, 4, 8, 16, 30 as the counter falls
+ *                   through 255, 93, 54, 26, 14, 6, so decays slow down;
+ *   decay           stops at the sustain level (sustain * 17);
+ *   zero            the counter stays at 0 until the next gate on.
+ * The ADSR delay bug (a rate counter above the new period must wrap first) is
+ * not modelled.
+ */
+enum { ENV_ATTACK, ENV_DECAY, ENV_RELEASE };
 
-static const double attack_ms[16] = {
-	2, 8, 16, 24, 38, 56, 68, 80, 100, 250, 500, 800, 1000, 3000, 5000, 8000
+static const int rate_period[16] = {
+	9, 32, 63, 95, 149, 220, 267, 313, 392, 977, 1954, 3126, 3907, 11720,
+	19532, 31251
 };
-/* decay and release take three times longer than attack */
-#define DECAY_MS(i) (attack_ms[i] * 3.0)
 
 typedef struct {
 	int    state;
-	double level;		/* 0..255 */
+	int    level;		/* envelope counter 0..255 */
+	double rc;		/* cycles since the last rate counter tick */
+	int    expc;		/* ticks since the last step (decay, release) */
+	int    exp_period;
+	int    hold_zero;
 } voice_t;
 
-/* Advance the envelope of one voice by one play call (dt milliseconds). */
-static void voice_step(voice_t *vm, const uint8_t *r, int gate_events,
-		       double dt)
+static void voice_init(voice_t *e)
+{
+	memset(e, 0, sizeof *e);
+	e->state = ENV_RELEASE;
+	e->exp_period = 1;
+	e->hold_zero = 1;
+}
+
+/* One envelope step, after the rate counter has ticked. */
+static void env_step(voice_t *e, int sustain_level)
+{
+	switch (e->state) {
+	case ENV_ATTACK:
+		e->level = (e->level + 1) & 0xFF;
+		if (e->level == 0xFF)
+			e->state = ENV_DECAY;
+		break;
+	case ENV_DECAY:
+		if (e->level != sustain_level)
+			e->level = (e->level - 1) & 0xFF;
+		break;
+	default:
+		e->level = (e->level - 1) & 0xFF;
+		break;
+	}
+	switch (e->level) {
+	case 0xFF: e->exp_period = 1; break;
+	case 0x5D: e->exp_period = 2; break;
+	case 0x36: e->exp_period = 4; break;
+	case 0x1A: e->exp_period = 8; break;
+	case 0x0E: e->exp_period = 16; break;
+	case 0x06: e->exp_period = 30; break;
+	case 0x00: e->exp_period = 1; e->hold_zero = 1; break;
+	}
+}
+
+/*
+ * Advance the envelope of one voice by one play call: `cycles` SID clock
+ * cycles, with the registers r[] as the tune left them and gate_events rising
+ * gate edges during the call.
+ */
+static void voice_step(voice_t *e, const uint8_t *r, int gate_events,
+		       double cycles)
 {
 	int gate = r[4] & 1;
 	int a = r[5] >> 4, d = r[5] & 15, s = r[6] >> 4, rel = r[6] & 15;
-	double target = s * 17.0;
 
-	if (gate_events)
-		vm->state = ENV_ATTACK;
-	else if (!gate && vm->state != ENV_IDLE)
-		vm->state = ENV_RELEASE;
-	if (!gate && gate_events && vm->state == ENV_ATTACK)
-		vm->state = ENV_RELEASE;	/* gated on and off in one frame */
+	if (gate_events) {
+		e->state = ENV_ATTACK;
+		e->hold_zero = 0;
+	}
+	if (!gate)
+		e->state = ENV_RELEASE;	/* also a gate on and off in one call */
 
-	switch (vm->state) {
-	case ENV_ATTACK:
-		vm->level += 255.0 * dt / attack_ms[a];
-		if (vm->level >= 255.0) {
-			vm->level = 255.0;
-			vm->state = ENV_DECAY;
+	while (cycles > 0.0 && !e->hold_zero) {
+		int period = rate_period[e->state == ENV_ATTACK ? a :
+					 e->state == ENV_DECAY ? d : rel];
+		double need = period - e->rc;
+
+		if (cycles < need) {
+			e->rc += cycles;
+			break;
 		}
-		break;
-	case ENV_DECAY:
-		vm->level -= 255.0 * dt / DECAY_MS(d);
-		if (vm->level <= target) {
-			vm->level = target;
-			vm->state = ENV_SUSTAIN;
+		cycles -= need > 0.0 ? need : 0.0;
+		e->rc = 0.0;
+		if (e->state == ENV_ATTACK || ++e->expc >= e->exp_period) {
+			e->expc = 0;
+			env_step(e, s * 17);
 		}
-		break;
-	case ENV_SUSTAIN:
-		vm->level = target;
-		break;
-	case ENV_RELEASE:
-		vm->level -= 255.0 * dt / DECAY_MS(rel);
-		if (vm->level <= 0.0) {
-			vm->level = 0.0;
-			vm->state = ENV_IDLE;
-		}
-		break;
-	default:
-		break;
 	}
 }
 
@@ -866,7 +909,7 @@ int main(int argc, char **argv)
 	int ncand, best;
 	uint8_t (*pk)[8], (*fr)[8];
 	uint8_t *stream;
-	double play_hz, atari_hz, call_ms;
+	double play_hz, atari_hz, call_cycles;
 	int ncalls, nframes, video_hz, speed_cia, i, v, r;
 	int irq_mode, irq_kernal = 0, irq_vec = 0, init_looping = 0;
 	const char *rate_src;
@@ -988,7 +1031,7 @@ int main(int argc, char **argv)
 	if (nframes > MAX_FRAMES)
 		die("duration too long: %d frames (max %d)", nframes, MAX_FRAMES);
 	ncalls = (int)ceil(nframes / atari_hz * play_hz) + 2;
-	call_ms = 1000.0 / play_hz;
+	call_cycles = ck.sid_clk / play_hz;
 
 	/* multispeed: several play calls per video frame, up to MAX_SUB */
 	ratio = play_hz / atari_hz;
@@ -1036,7 +1079,8 @@ int main(int argc, char **argv)
 	stream = malloc((size_t)nrec * 9 + 5 + HDR_SIZE);
 	if (!pk || !vi || !fr || !stream)
 		die("out of memory");
-	memset(vm, 0, sizeof vm);
+	for (v = 0; v < 3; v++)
+		voice_init(&vm[v]);
 
 	for (i = 0; i < ncalls; i++) {
 		memset(m->gate_on, 0, sizeof m->gate_on);
@@ -1050,7 +1094,7 @@ int main(int argc, char **argv)
 			die("play routine failed at call %d", i);
 		}
 		for (v = 0; v < 3; v++) {
-			voice_step(&vm[v], m->sid + 7 * v, m->gate_on[v], call_ms);
+			voice_step(&vm[v], m->sid + 7 * v, m->gate_on[v], call_cycles);
 			voice_info(m->sid, &vm[v], v, ck.sid_clk, &vi[i][v]);
 		}
 	}
