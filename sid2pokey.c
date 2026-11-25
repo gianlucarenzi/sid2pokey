@@ -3,6 +3,8 @@
 
 /* sp-common.asm: POKEY player running in the deferred vertical blank */
 extern unsigned char play_k;		/* records per video frame (1 = normal) */
+extern unsigned char play_chips;	/* POKEYs the tune is written for (1 or 2) */
+extern unsigned char have_stereo;	/* $80 if a second POKEY answers at $D210 */
 extern void initPlayer(void);
 extern void startPlayer(void);
 extern void stopPlayer(void);
@@ -110,6 +112,9 @@ int main(void)
 	for (;;) {
 		printf("Playing... press a key to stop.\n");
 		initPlayer();
+		if (play_chips > 1)
+			printf(have_stereo ? "Two POKEYs (stereo).\n"
+				: "No second POKEY: only the first SID is heard.\n");
 		if (play_k > 1)
 			patchDisplayList(play_k, ntsc);
 		startPlayer();

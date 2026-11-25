@@ -3,22 +3,26 @@
 ;
 ; Replays the stream produced by tools/sidconv (see the format description
 ; at the top of tools/sidconv.c): one LZ-compressed stream per POKEY register
-; that changes, one value per register per record.  A video frame holds
-; play_k records.  The deferred VBI plays the first record of a frame; when
-; play_k > 1 the display list carries DLI bits (patched by sid2pokey.c) and the
-; DLI handler plays the other records, in order.  When the last frame has been
-; played (checked at the VBI) every decoder is reset and the tune restarts.
+; that changes, one value per register per record.  A tune with two SIDs has
+; 16 registers: 8 for the POKEY at $D200 and 8 for a second one at $D210 (stereo
+; upgrade); the second is only written when it is really there.  A video frame
+; holds play_k records.  The deferred VBI plays the first record of a frame;
+; when play_k > 1 the display list carries DLI bits (patched by sid2pokey.c) and
+; the DLI handler plays the other records, in order.  When the last frame has
+; been played (checked at the VBI) every decoder is reset and the tune restarts.
 ;
 ; Decoder, per register: a flag byte (read bit 7 first, a sentinel bit tells
 ; when it is empty) tells whether the next token is a literal (one byte) or a
 ; match (two bytes: offset bits 0-7; then bit 7 = offset bit 8, bits 0-6 =
 ; length - 3).  Every decoded value goes to a 512 byte ring buffer of the
-; register (all registers share the position pos) and to POKEY.
+; register (all registers share the position pos) and then to POKEY.
 
 .export _initPlayer
 .export _startPlayer
 .export _stopPlayer
 .export _play_k
+.export _play_chips
+.export _have_stereo
 
 .import song_data			; sp-data.asm
 
@@ -29,12 +33,17 @@
 ; interrupt, where the ROM is already enabled.
 .include "atari.inc"
 
-audf1  = $d200				; AUDF1 AUDC1 AUDF2 AUDC2 ... AUDF4 AUDC4
-audctl = $d208
-nmien  = $d40e				; bit 7 DLI, bit 6 VBI
+audf1   = $d200				; AUDF1 AUDC1 AUDF2 AUDC2 ... AUDF4 AUDC4
+audctl  = $d208
+skctl   = $d20f
+pokey2  = $d210				; the same registers of a second POKEY
+random2 = $d21a
+audctl2 = $d218
+skctl2  = $d21f
+nmien   = $d40e				; bit 7 DLI, bit 6 VBI
 
-HDR_REGS = 5				; header: register table (8 x 3 bytes)
-RING_SIZE = 8 * 512
+HDR_REGS = 7				; header: register table (3 bytes per register)
+RING_SIZE = 16 * 512
 
 .zeropage
 sptr:	.res 2				; compressed stream pointer
@@ -48,34 +57,53 @@ reg:	.res 1
 
 .bss
 _play_k:	.res 1			; records per video frame (stream header)
+_play_chips:	.res 1			; POKEYs the stream is written for (1 or 2)
+_have_stereo:	.res 1			; $80 when a second POKEY answers at $D210
 old_vdslst:	.res 2
 frames:		.res 2			; frames in the stream
 left:		.res 2			; frames still to play
 pos_lo:		.res 1			; position in the rings (0..511)
 pos_hi:		.res 1
 nl:		.res 1
+nregs:		.res 1			; 8 or 16
 ring_hi:	.res 1			; page of the first (page aligned) ring
-reglist:	.res 9			; registers that have a stream, then $ff
-outbuf:		.res 8			; values of the current record, per register
-start_lo:	.res 8			; stream start per register
-start_hi:	.res 8
-st_lo:		.res 8			; stream read pointer per register
-st_hi:		.res 8
-fl:		.res 8			; flag shift register
-cnt:		.res 8			; values left in the current match
-srcl:		.res 8			; match source position in the ring
-srch:		.res 8
-rhi:		.res 8			; page of the ring of each register
+reglist:	.res 17			; registers that have a stream, then $ff
+outbuf:		.res 16			; values of the current record, per register
+start_lo:	.res 16			; stream start per register
+start_hi:	.res 16
+st_lo:		.res 16			; stream read pointer per register
+st_hi:		.res 16
+fl:		.res 16			; flag shift register
+cnt:		.res 16			; values left in the current match
+srcl:		.res 16			; match source position in the ring
+srch:		.res 16
+rhi:		.res 16			; page of the ring of each register
 ring:		.res RING_SIZE + 255
 
 .segment "CODE"
 
 ; void initPlayer(void);   no interrupts are touched
 .proc _initPlayer
+	lda #0
+	sta _have_stereo
 	jsr silence
+	lda song_data+6			; header: POKEYs
+	sta _play_chips
+	cmp #2
+	bcc @one
+	jsr detect_stereo		; the second POKEY is only used if present
+@one:	lda _play_chips
+	asl a
+	asl a
+	asl a				; registers: 8 per POKEY
+	sta nregs
 	lda song_data			; header: AUDCTL
 	sta audctl
-	lda song_data+2			; frames
+	bit _have_stereo
+	bpl @nos
+	lda song_data+5			; header: AUDCTL of POKEY 2
+	sta audctl2
+@nos:	lda song_data+2			; frames
 	sta frames
 	lda song_data+3
 	sta frames+1
@@ -100,7 +128,7 @@ ring:		.res RING_SIZE + 255
 	clc
 	adc #2
 	inx
-	cpx #8
+	cpx #16
 	bne @rh
 
 	lda #0				; register table
@@ -112,7 +140,7 @@ ring:		.res RING_SIZE + 255
 	bne @lz
 	lda song_data+HDR_REGS+1,y	; constant: write it once
 	ldx reg
-	sta audf1,x
+	jsr putreg
 	jmp @next
 @lz:	ldx reg
 	clc
@@ -131,7 +159,7 @@ ring:		.res RING_SIZE + 255
 	iny
 	inc reg
 	lda reg
-	cmp #8
+	cmp nregs
 	bne @reg
 	ldx nl
 	lda #$ff
@@ -188,20 +216,68 @@ ring:		.res RING_SIZE + 255
 	jsr silence
 	lda #0				; the stream may have set 16 bit / 15 kHz modes
 	sta audctl
-	rts
+	bit _have_stereo
+	bpl @done
+	sta audctl2
+@done:	rts
 .endproc
 
-silence:
+; Is there a second POKEY at $D210?  Put it in running mode (SKCTL = 3) and the
+; first in initialization mode (SKCTL = 0, polynomial counters held, RANDOM
+; constant $FF), then look at RANDOM at $D21A.  Without a second POKEY
+; $D210-$D21F mirror the first one: both writes reach the same chip, which ends
+; up in initialization mode, and RANDOM reads $FF all the time.  A real second
+; POKEY is running and RANDOM moves.  An emulator that plays the second POKEY
+; but does not implement its RANDOM (atari800 -stereo returns 0) gives a
+; constant that is not $FF: that counts as present too.
+detect_stereo:
+	lda #3
+	sta skctl2
 	lda #0
-	ldx #7
-:	sta audf1,x
+	sta skctl
+	ldx #0
+	lda random2
+	sta tmp
+@lp:	lda random2
+	cmp tmp
+	bne @found
+	dex
+	bne @lp
+	lda tmp				; never moved: $FF is the mirror of POKEY 1
+	cmp #$ff
+	beq @none
+@found:	lda #$80
+	bne @set			; always taken
+@none:	lda #0
+@set:	sta _have_stereo
+	lda #3				; back to normal operation
+	sta skctl
+	rts
+
+; X = register (0..7: POKEY 1, 8..15: POKEY 2), A = value.  Registers of a
+; second POKEY that is not there are not written ($D210+ would reach the first
+; one).  Preserves X and Y.
+putreg:
+	cpx #8
+	bcs @p2
+	sta audf1,x
+	rts
+@p2:	bit _have_stereo
+	bpl @skip
+	sta pokey2-8,x
+@skip:	rts
+
+silence:
+	ldx #15
+:	lda #0
+	jsr putreg
 	dex
 	bpl :-
 	rts
 
 ; Reset every decoder and start from the first frame.
 rewind:
-	ldx #7
+	ldx #15
 @l:	lda start_lo,x
 	sta st_lo,x
 	lda start_hi,x
@@ -233,14 +309,14 @@ playrec:
 	tax
 	jsr decode
 	inc ri
-	bne @next			; at most 8 registers: always taken
+	bne @next			; at most 16 registers: always taken
 @burst:	ldy #0
 @w:	ldx reglist,y
 	bmi @done
 	lda outbuf,x
-	sta audf1,x
+	jsr putreg
 	iny
-	bne @w				; at most 8 registers: always taken
+	bne @w				; at most 16 registers: always taken
 @done:
 	inc pos_lo
 	bne @ret

@@ -10,10 +10,11 @@
  *
  * Output stream format (all values bytes):
  *
- *   header (29 bytes):
- *     AUDCTL, video_hz (50|60), frames (16 bit little endian),
- *     records per video frame (1..4),
- *     then for each of the 8 registers (AUDF1 AUDC1 AUDF2 AUDC2 ... AUDC4):
+ *   header (7 + 3 * registers bytes; 8 registers per POKEY, 16 for two):
+ *     AUDCTL (POKEY 1), video_hz (50|60), frames (16 bit little endian),
+ *     records per video frame (1..4), AUDCTL of POKEY 2, number of POKEYs,
+ *     then for each register (AUDF1 AUDC1 AUDF2 AUDC2 ... AUDC4, then the same
+ *     for POKEY 2):
  *       0, value, 0              the register never changes
  *       1, offset (16 bit)       offset of its LZ stream from the file start
  *   one LZ stream per changing register, each holding frames x records
@@ -30,8 +31,10 @@
  * every stream is reset when the end is reached, so the tune loops.
  *
  * Current mapping (see the README for what is still missing):
- *   - The converter tries several layouts of the three SID voices on the
- *     four POKEY channels and keeps the one with the smallest pitch error:
+ *   - A tune with two SIDs (PSID v3) uses two POKEYs, one per SID (the second
+ *     at $D210 on a stereo Atari); a third SID is ignored.
+ *   - The converter tries several layouts of the three voices of a SID on the
+ *     four channels of its POKEY and keeps the one with the smallest pitch error:
  *     three 8 bit channels on the 64 kHz (or 15 kHz) clock, or one voice on
  *     the 16 bit channel pair 1+2 at 1.79 MHz (precise bass) and the other
  *     two on channels 3 and 4.
@@ -90,6 +93,8 @@ typedef struct {
 	int      songs, start;
 	uint32_t speed;
 	int      flags;
+	int      nsids;		/* SID chips the tune uses (1..3) */
+	int      sid_addr[3];	/* where they are: $D400, then v3/v4 addresses */
 	char     title[33], author[33], copyright[33];
 	uint8_t *data;		/* payload (without the load address word) */
 	size_t   len;
@@ -132,6 +137,22 @@ static void psid_load(psid_t *s, const char *path)
 	s->speed   = (uint32_t)be16(s->file + 18) << 16 | be16(s->file + 20);
 	s->flags   = (s->version >= 2 && size >= 0x7C) ? (int)be16(s->file + 0x76) : 0;
 
+	/* PSID v3 / v4: address of the 2nd / 3rd SID, in units of 16 bytes
+	 * above $D000: $42-$7E or $E0-$FE, even; 0 means none. */
+	s->nsids = 1;
+	s->sid_addr[0] = 0xD400;
+	if (s->version >= 3 && size >= 0x7C) {
+		int b2 = s->file[0x7A];
+		int b3 = s->version >= 4 ? s->file[0x7B] : 0;
+#define SID_BYTE_OK(b) (!((b) & 1) && (((b) >= 0x42 && (b) <= 0x7E) || ((b) >= 0xE0 && (b) <= 0xFE)))
+		if (SID_BYTE_OK(b2)) {
+			s->sid_addr[s->nsids++] = 0xD000 + b2 * 16;
+			if (SID_BYTE_OK(b3))
+				s->sid_addr[s->nsids++] = 0xD000 + b3 * 16;
+		}
+#undef SID_BYTE_OK
+	}
+
 	memcpy(s->title,     s->file + 0x16, 32); s->title[32] = 0;
 	memcpy(s->author,    s->file + 0x36, 32); s->author[32] = 0;
 	memcpy(s->copyright, s->file + 0x56, 32); s->copyright[32] = 0;
@@ -161,8 +182,10 @@ static void psid_load(psid_t *s, const char *path)
 typedef struct {
 	uint8_t  mem[65536];
 	uint8_t  kernal[0x2000];	/* ROM seen at $E000 while HIRAM is set    */
-	uint8_t  sid[0x20];		/* last value written to each SID register */
-	int      gate_on[3];		/* gate 0->1 transitions during this call  */
+	uint8_t  sid[3][0x20];		/* last value written to each SID register */
+	int      gate_on[3][3];		/* gate 0->1 transitions during this call  */
+	int      nsids;			/* SID chips on the bus                    */
+	uint16_t sid_addr[3];
 	int      cia_set;		/* tune programmed CIA1 timer A latch      */
 	uint16_t cia_latch;
 	uint8_t  cia_mask;		/* CIA1 interrupt mask (bit 0: timer A)    */
@@ -171,6 +194,24 @@ typedef struct {
 	uint32_t lfsr;
 } machine_t;
 
+/*
+ * Which SID a bus address belongs to (0..2), or -1.  A single SID answers all
+ * of $D400-$D7FF (mirrored every 32 bytes); with several, each one answers
+ * only its own 32 bytes.
+ */
+static int sid_chip(const machine_t *m, uint16_t addr)
+{
+	int c;
+
+	if (m->nsids > 1) {
+		for (c = 0; c < m->nsids; c++)
+			if ((addr & 0xFFE0) == m->sid_addr[c])
+				return c;
+		return -1;
+	}
+	return (addr >= 0xD400 && addr < 0xD800) ? 0 : -1;
+}
+
 static uint8_t bus_read(void *ctx, uint16_t addr)
 {
 	machine_t *m = ctx;
@@ -178,7 +219,7 @@ static uint8_t bus_read(void *ctx, uint16_t addr)
 	if (addr >= 0xE000 && (m->mem[1] & 2))	/* KERNAL ROM over the RAM */
 		return m->kernal[addr - 0xE000];
 
-	if (addr >= 0xD400 && addr < 0xD800) {
+	if (sid_chip(m, addr) >= 0) {
 		switch (addr & 0x1F) {
 		case 0x1B:			/* OSC3: pseudo random */
 			m->lfsr = m->lfsr * 1664525u + 1013904223u;
@@ -205,15 +246,17 @@ static void bus_write(void *ctx, uint16_t addr, uint8_t val)
 {
 	machine_t *m = ctx;
 
-	if (addr >= 0xD400 && addr < 0xD800) {
+	int c = sid_chip(m, addr);
+
+	if (c >= 0) {
 		unsigned r = addr & 0x1F;
 		if (r <= 0x18) {
 			if (r == 4 || r == 11 || r == 18) {
 				int v = (int)(r / 7);
-				if (!(m->sid[r] & 1) && (val & 1))
-					m->gate_on[v]++;
+				if (!(m->sid[c][r] & 1) && (val & 1))
+					m->gate_on[c][v]++;
 			}
-			m->sid[r] = val;
+			m->sid[c][r] = val;
 		}
 		return;
 	}
@@ -479,6 +522,9 @@ typedef struct {
 	double cpu_clk;		/* Atari CPU / POKEY clock, Hz */
 } clocks_t;
 
+#define NVOICE	6		/* SID voices converted: 2 chips x 3 */
+#define MAX_REGS	16		/* POKEY registers: 2 chips x 8 */
+
 /* What the voice model reports for one SID voice after one play call. */
 typedef struct {
 	double hz;		/* pitch frequency from the 16 bit register */
@@ -607,7 +653,7 @@ static int build_configs(config_t *c, int which)
 /* Average pitch error (cents) over all the sounding, non-noise voices,
  * weighted by volume. */
 static double config_cost(const config_t *cf, const clocks_t *ck,
-			  const vinfo_t (*vi)[3], int ncalls)
+			  const vinfo_t (*vi)[NVOICE], int ncalls, int base)
 {
 	double total = 0.0, weight = 0.0;
 	int i, v;
@@ -615,10 +661,10 @@ static double config_cost(const config_t *cf, const clocks_t *ck,
 	for (i = 0; i < ncalls; i++) {
 		for (v = 0; v < 3; v++) {
 			double w;
-			if (vi[i][v].vol == 0 || vi[i][v].noise)
+			if (vi[i][base + v].vol == 0 || vi[i][base + v].noise)
 				continue;
-			w = vi[i][v].vol / 15.0;
-			total += w * quantize(ck, cf->mode[v], &vi[i][v]).cost;
+			w = vi[i][base + v].vol / 15.0;
+			total += w * quantize(ck, cf->mode[v], &vi[i][base + v]).cost;
 			weight += w;
 		}
 	}
@@ -656,7 +702,7 @@ static void put_voice(const config_t *cf, const clocks_t *ck, int v,
 
 /* ------------------------------ stream ----------------------------- */
 
-#define HDR_SIZE	29
+#define HDR_SIZE(nreg)	(7 + 3 * (nreg))
 #define LZ_WINDOW	512
 #define LZ_MINLEN	3
 #define LZ_MAXLEN	130
@@ -742,24 +788,28 @@ static size_t lz_encode(const uint8_t *s, int n, uint8_t *out)
 
 /*
  * Whole stream: header, then the LZ stream of every register that changes.
- * fr[i][r] is register r at record i.  Returns the size in bytes.
+ * fr[i][r] is register r at record i (nreg of them: 8 per POKEY).  Returns
+ * the size in bytes.
  */
-static size_t stream_encode(const uint8_t (*fr)[8], int nrec, uint8_t audctl,
-			    int video_hz, int frames, int sub, uint8_t *out)
+static size_t stream_encode(const uint8_t (*fr)[MAX_REGS], int nrec, int nreg,
+			    const uint8_t audctl[2], int video_hz, int frames,
+			    int sub, uint8_t *out)
 {
 	uint8_t *col = malloc((size_t)nrec);
-	size_t pos = HDR_SIZE;
+	size_t pos = HDR_SIZE(nreg);
 	int r, i;
 
 	if (!col)
 		die("out of memory");
-	out[0] = audctl;
+	out[0] = audctl[0];
 	out[1] = (uint8_t)video_hz;
 	out[2] = (uint8_t)(frames & 0xFF);
 	out[3] = (uint8_t)(frames >> 8);
 	out[4] = (uint8_t)sub;
-	for (r = 0; r < 8; r++) {
-		uint8_t *h = out + 5 + 3 * r;
+	out[5] = audctl[1];
+	out[6] = (uint8_t)(nreg / 8);
+	for (r = 0; r < nreg; r++) {
+		uint8_t *h = out + 7 + 3 * r;
 		int constant = 1;
 
 		for (i = 0; i < nrec; i++) {
@@ -785,14 +835,14 @@ static size_t stream_encode(const uint8_t (*fr)[8], int nrec, uint8_t audctl,
 }
 
 /* Size the previous format (mask byte + changed registers) would have had. */
-static size_t delta_size(const uint8_t (*fr)[8], int nrec)
+static size_t delta_size(const uint8_t (*fr)[MAX_REGS], int nrec, int nreg)
 {
 	size_t n = 5;
 	int i, r;
 
 	for (i = 0; i < nrec; i++) {
 		n++;
-		for (r = 0; r < 8; r++)
+		for (r = 0; r < nreg; r++)
 			if (i == 0 || fr[i][r] != fr[i - 1][r])
 				n++;
 	}
@@ -805,23 +855,23 @@ static size_t delta_size(const uint8_t (*fr)[8], int nrec)
  * an "asl, reload when it becomes zero" shift register) and compare it with
  * the original records.  Returns 0 if identical.
  */
-static int stream_verify(const uint8_t *s, size_t len, const uint8_t (*fr)[8],
-			 int nrec)
+static int stream_verify(const uint8_t *s, size_t len,
+			 const uint8_t (*fr)[MAX_REGS], int nrec, int nreg)
 {
-	static uint8_t ring[8][LZ_WINDOW];
-	size_t sp[8];
-	unsigned fl[8] = { 0 };
-	int cnt[8] = { 0 }, src[8] = { 0 };
+	static uint8_t ring[MAX_REGS][LZ_WINDOW];
+	size_t sp[MAX_REGS];
+	unsigned fl[MAX_REGS] = { 0 };
+	int cnt[MAX_REGS] = { 0 }, src[MAX_REGS] = { 0 };
 	int i, r, pos = 0;
 
-	if (len < HDR_SIZE)
+	if (len < (size_t)HDR_SIZE(nreg))
 		return -1;
-	for (r = 0; r < 8; r++)
-		sp[r] = (size_t)s[5 + 3 * r + 1] | (size_t)s[5 + 3 * r + 2] << 8;
+	for (r = 0; r < nreg; r++)
+		sp[r] = (size_t)s[7 + 3 * r + 1] | (size_t)s[7 + 3 * r + 2] << 8;
 
 	for (i = 0; i < nrec; i++) {
-		for (r = 0; r < 8; r++) {
-			const uint8_t *h = s + 5 + 3 * r;
+		for (r = 0; r < nreg; r++) {
+			const uint8_t *h = s + 7 + 3 * r;
 			uint8_t v;
 
 			if (h[0] == 0) {
@@ -883,6 +933,8 @@ static void usage(void)
 "  -c pal|ntsc|auto  clock the SID tune was written for (default auto)\n"
 "  -m auto|plain|bass16  channel layout (default auto: best pitch accuracy)\n"
 "  -k n        records per video frame, 1-4 (default: from the tune's rate)\n"
+"  -S n        SID chips to convert, 1 or 2 (default: as many as the tune has,\n"
+"              up to 2; two need a stereo POKEY on the Atari)\n"
 "  -d          dump the POKEY registers of every frame\n"
 "  -v          verbose\n");
 	exit(2);
@@ -895,6 +947,8 @@ int main(int argc, char **argv)
 	int sid_clock = 0;		/* 0 auto, 1 pal, 2 ntsc */
 	int layout = 0;			/* 0 auto, 1 plain, 2 bass16 */
 	int ksub = 0;			/* records per video frame, 0 auto */
+	int maxchips = 0;		/* -S: SIDs to convert, 0 = all (max 2) */
+	int chips, nreg, ch;
 	int nrec, j;
 	double ratio;
 	double seconds = 60.0;
@@ -902,12 +956,13 @@ int main(int argc, char **argv)
 	machine_t *m;
 	cpu6502_t cpu;
 	clocks_t ck;
-	config_t cands[8], *cf;
-	vstate_t vs[3];
-	voice_t vm[3];
-	vinfo_t (*vi)[3];
-	int ncand, best;
-	uint8_t (*pk)[8], (*fr)[8];
+	config_t cands[8], *cf[2];
+	vstate_t vs[2][3];
+	voice_t vm[NVOICE];
+	vinfo_t (*vi)[NVOICE];
+	int ncand, best[2];
+	uint8_t (*pk)[MAX_REGS], (*fr)[MAX_REGS];
+	uint8_t audctl[2] = { 0, 0 };
 	uint8_t *stream;
 	double play_hz, atari_hz, call_cycles;
 	int ncalls, nframes, video_hz, speed_cia, i, v, r;
@@ -942,6 +997,10 @@ int main(int argc, char **argv)
 			ksub = atoi(argv[++i]);
 			if (ksub < 1 || ksub > MAX_SUB)
 				usage();
+		} else if (!strcmp(a, "-S") && i + 1 < argc) {
+			maxchips = atoi(argv[++i]);
+			if (maxchips < 1 || maxchips > 2)
+				usage();
 		} else if (!strcmp(a, "-d")) dump = 1;
 		else if (!strcmp(a, "-v")) verbose = 1;
 		else if (a[0] == '-') usage();
@@ -958,6 +1017,13 @@ int main(int argc, char **argv)
 	if (psid.init == 0)
 		die("init address is 0: C64 BASIC tune, not supported");
 	irq_mode = (psid.play == 0);	/* the tune installs its own IRQ handler */
+	chips = psid.nsids > 2 ? 2 : psid.nsids;
+	if (maxchips && maxchips < chips)
+		chips = maxchips;
+	nreg = 8 * chips;
+	if (psid.nsids > 2)
+		fprintf(stderr, "sidconv: warning: the tune has %d SIDs; only the "
+			"first two are converted\n", psid.nsids);
 	if (song == 0)
 		song = psid.start;
 	if (song < 1 || song > psid.songs)
@@ -973,6 +1039,9 @@ int main(int argc, char **argv)
 	if (!m)
 		die("out of memory");
 	m->lfsr = 0x1234567;
+	m->nsids = psid.nsids;
+	for (i = 0; i < 3; i++)
+		m->sid_addr[i] = (uint16_t)psid.sid_addr[i];
 	c64_setup(m, (unsigned)psid.init);
 	memcpy(m->mem + psid.load, psid.data, psid.len);
 	cpu.read = bus_read;
@@ -1073,13 +1142,13 @@ int main(int argc, char **argv)
 	}
 
 	/* ---- run the tune, one play call at a time ---- */
-	pk = calloc((size_t)ncalls, 8);
+	pk = calloc((size_t)ncalls, MAX_REGS);
 	vi = calloc((size_t)ncalls, sizeof *vi);
-	fr = calloc((size_t)nrec, 8);
-	stream = malloc((size_t)nrec * 9 + 5 + HDR_SIZE);
+	fr = calloc((size_t)nrec, MAX_REGS);
+	stream = malloc((size_t)nrec * (MAX_REGS + 2) + 64);
 	if (!pk || !vi || !fr || !stream)
 		die("out of memory");
-	for (v = 0; v < 3; v++)
+	for (v = 0; v < NVOICE; v++)
 		voice_init(&vm[v]);
 
 	for (i = 0; i < ncalls; i++) {
@@ -1093,40 +1162,49 @@ int main(int argc, char **argv)
 		} else if (call_sub(&cpu, (uint16_t)psid.play, 0, PLAY_STEPS, NULL)) {
 			die("play routine failed at call %d", i);
 		}
-		for (v = 0; v < 3; v++) {
-			voice_step(&vm[v], m->sid + 7 * v, m->gate_on[v], call_cycles);
-			voice_info(m->sid, &vm[v], v, ck.sid_clk, &vi[i][v]);
-		}
-	}
-
-	/* ---- pick the channel layout with the smallest pitch error ---- */
-	ncand = build_configs(cands, layout);
-	best = 0;
-	{
-		double best_cost = 1e30;
-		for (i = 0; i < ncand; i++) {
-			double cost = config_cost(&cands[i], &ck,
-						  (const vinfo_t (*)[3])vi, ncalls);
-			if (verbose)
-				fprintf(stderr, "layout %-40s %6.1f cents\n",
-					cands[i].name, cost);
-			if (cost < best_cost) {
-				best_cost = cost;
-				best = i;
+		for (ch = 0; ch < chips; ch++) {
+			for (v = 0; v < 3; v++) {
+				int k = 3 * ch + v;
+				voice_step(&vm[k], m->sid[ch] + 7 * v,
+					   m->gate_on[ch][v], call_cycles);
+				voice_info(m->sid[ch], &vm[k], v, ck.sid_clk,
+					   &vi[i][k]);
 			}
 		}
 	}
-	cf = &cands[best];
-	if (verbose)
-		fprintf(stderr, "using     : %s (AUDCTL $%02X)\n", cf->name,
-			cf->audctl);
 
+	/* ---- pick the channel layout with the smallest pitch error, per SID ---- */
+	ncand = build_configs(cands, layout);
 	memset(vs, 0, sizeof vs);
-	for (v = 0; v < 3; v++)
-		vs[v].dist = 0xA0;
-	for (i = 0; i < ncalls; i++)
+	for (ch = 0; ch < chips; ch++) {
+		double best_cost = 1e30;
+
+		best[ch] = 0;
+		for (i = 0; i < ncand; i++) {
+			double cost = config_cost(&cands[i], &ck,
+						  (const vinfo_t (*)[NVOICE])vi,
+						  ncalls, 3 * ch);
+			if (verbose)
+				fprintf(stderr, "SID %d layout %-40s %6.1f cents\n",
+					ch + 1, cands[i].name, cost);
+			if (cost < best_cost) {
+				best_cost = cost;
+				best[ch] = i;
+			}
+		}
+		cf[ch] = &cands[best[ch]];
+		audctl[ch] = cf[ch]->audctl;
+		if (verbose)
+			fprintf(stderr, "using     : %s%s (AUDCTL $%02X)\n",
+				chips > 1 ? ch ? "POKEY 2: " : "POKEY 1: " : "",
+				cf[ch]->name, cf[ch]->audctl);
 		for (v = 0; v < 3; v++)
-			put_voice(cf, &ck, v, &vi[i][v], &vs[v], pk[i]);
+			vs[ch][v].dist = 0xA0;
+		for (i = 0; i < ncalls; i++)
+			for (v = 0; v < 3; v++)
+				put_voice(cf[ch], &ck, v, &vi[i][3 * ch + v],
+					  &vs[ch][v], pk[i] + 8 * ch);
+	}
 
 	/* ---- resample play calls to Atari video frames ---- */
 	for (i = 0; i < nframes; i++) {
@@ -1135,7 +1213,7 @@ int main(int argc, char **argv)
 			int c = (int)floor(t * play_hz + 1e-6);
 			if (c >= ncalls)
 				c = ncalls - 1;
-			memcpy(fr[i * ksub + j], pk[c], 8);
+			memcpy(fr[i * ksub + j], pk[c], MAX_REGS);
 		}
 	}
 
@@ -1145,15 +1223,16 @@ int main(int argc, char **argv)
 				printf("%5d.%d:", i / ksub, i % ksub);
 			else
 				printf("%5d:", i);
-			for (r = 0; r < 8; r++)
+			for (r = 0; r < nreg; r++)
 				printf(" %02X", fr[i][r]);
 			printf("\n");
 		}
 	}
 
-	outlen = stream_encode((const uint8_t (*)[8])fr, nrec, cf->audctl,
+	outlen = stream_encode((const uint8_t (*)[MAX_REGS])fr, nrec, nreg, audctl,
 			       video_hz, nframes, ksub, stream);
-	if (stream_verify(stream, outlen, (const uint8_t (*)[8])fr, nrec))
+	if (stream_verify(stream, outlen, (const uint8_t (*)[MAX_REGS])fr, nrec,
+			  nreg))
 		die("internal error: stream verification failed");
 
 	f = fopen(outname, "wb");
@@ -1163,7 +1242,7 @@ int main(int argc, char **argv)
 	{
 		int snd = 0;
 		for (i = 0; i < nrec; i++)
-			for (r = 1; r < 8; r += 2)
+			for (r = 1; r < nreg; r += 2)
 				if (fr[i][r] & 15) {
 					snd++;
 					break;
@@ -1173,7 +1252,7 @@ int main(int argc, char **argv)
 			"would be %zu), sound in %d%% of the frames\n",
 			outname, nframes, ksub, nframes / atari_hz, outlen,
 			(double)outlen / nframes,
-			delta_size((const uint8_t (*)[8])fr, nrec),
+			delta_size((const uint8_t (*)[MAX_REGS])fr, nrec, nreg),
 			snd * 100 / nrec);
 		if (snd == 0)
 			fprintf(stderr, "warning: the converted tune is silent%s\n",
@@ -1182,8 +1261,10 @@ int main(int argc, char **argv)
 				: "; it probably needs something sidconv does "
 				"not emulate");
 	}
-	if (outlen > 30000)
-		fprintf(stderr, "warning: stream larger than 30 KB, it may not "
-			"fit in a 48 KB Atari (the player needs about 10 KB)\n");
+	/* what is left of a 48 KB Atari after the player: about 6 KB of code
+	 * and runtime, 8.4 KB of ring buffers (16 registers) and some stack */
+	if (outlen > 22000)
+		fprintf(stderr, "warning: stream larger than 22 KB, it may not fit "
+			"in a 48 KB Atari\n");
 	return 0;
 }

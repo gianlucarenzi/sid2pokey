@@ -1,7 +1,8 @@
 # sid2pokey
 
 Converts a C64 SID tune (PSID/RSID) into something an Atari 8-bit can play on
-its POKEY chip, driven by the vertical blank interrupt.
+its POKEY chip, driven by the vertical blank interrupt.  Tunes with two SIDs
+(PSID v3) play on two POKEYs, one per SID, on an Atari with a stereo POKEY upgrade.
 
 SID files are 6502 code plus data, not audio.  `tools/sidconv` runs the tune's
 `init`/`play` routines on a 6502 emulator, records what it writes to the SID
@@ -24,10 +25,11 @@ Requires cc65 and a host C compiler.  The converter alone:
     tools/sidconv -v -s 1 -t 60 -p pal -o song.bin tune.sid     # -d dumps the POKEY registers
     tools/sidconv -m plain|bass16 ...                           # force a channel layout (default: auto)
     tools/sidconv -k 1 ...                                      # force 1-4 records per video frame (default: from the tune)
+    tools/sidconv -S 1 ...                                      # convert only the first SID of a dual SID tune
 
 `DURATION` is needed because a SID file has no length.  The stream must stay
-under about 30 KB to fit in a 48 KB machine next to the player (which needs about
-10 KB, rings included); the converter warns.  That is many minutes of music: 5
+under about 22 KB to fit in a 48 KB machine next to the player (which needs about
+15 KB, with 16 ring buffers); the converter warns.  That is many minutes of music: 5
 minutes of a 4x tune take 16 KB.
 
 On the Atari, a key press stops the tune and the next one plays it again from the
@@ -69,6 +71,25 @@ the DLIs on, so that they are always in step with the frame.  Tunes faster than
 and a rate that is not a whole multiple of the frame rate (such as a 4x PAL tune
 on an NTSC machine) is resampled too.
 
+### Two SIDs, two POKEYs
+
+A tune whose PSID v3/v4 header gives a second SID address (`$D420`, `$D500`, `$DE00`
+and a few others: 264 of the 56665 HVSC files) is converted for two POKEYs: SID 1
+goes to the POKEY at `$D200` and SID 2 to the second POKEY of a stereo upgrade at
+`$D210`, each with its own channel layout and `AUDCTL` (they are chosen separately,
+so one chip may use a 16 bit pair and the other three plain channels).  A third SID
+is ignored with a warning, since nine voices do not fit in eight channels.  `-S 1`
+converts only the first SID.
+
+On a machine without a second POKEY `$D210-$D21F` mirror the first one, so writing
+them would overwrite the first chip.  The player therefore looks for the second
+POKEY first: it sets it running and the first one in initialization mode, then reads
+RANDOM at `$D21A`.  If RANDOM moves, or reads a constant other than `$FF`, the
+second POKEY is there (the constant case is atari800 with `-stereo`, which plays
+the second chip but returns 0 for its RANDOM); `$FF` constant is the mirror of the
+first chip.  Without a second POKEY only the first SID is played, nothing is
+written to `$D210+`, and the program says so.
+
 Tunes with `play` address 0 install their own IRQ handler: sidconv emulates the
 interrupt the way a C64 delivers it (vector at `$0314` with the KERNAL visible, at
 `$FFFE` with RAM; a stub KERNAL provides the usual exits `$EA31`/`$EA34`/`$EA7B`/
@@ -78,22 +99,24 @@ raster.  If `init` never returns (main loop) the IRQ handler is still called.
 Not handled yet: NMI driven tunes (sampled digi players), tunes whose main loop
 does the work, C64 BASIC tunes (`init` = 0), multispeed above 4x (resampled to 4),
 filter, ring modulation, sync, pulse width, sampled digi
-(`$D418`), second POKEY (stereo), loop-point detection, calls to KERNAL routines
+(`$D418`), a third SID, loop-point detection, using the second POKEY to improve
+single SID tunes (a 16 bit pair for every voice), calls to KERNAL routines
 other than the interrupt exits, a few unstable undocumented 6502 opcodes.  A
 conversion that comes out silent is reported with a warning.
 
 ## Stream and player
 
-`song.bin` has a 29 byte header (AUDCTL, frame rate, frames, records per frame,
-and for each of the 8 POKEY registers either a constant or the offset of its
-stream), then one LZ stream per register that changes, each with one value per
+`song.bin` has a header of 7 + 3 bytes per register (AUDCTL, frame rate, frames,
+records per frame, AUDCTL of the second POKEY, number of POKEYs, and for each of
+the 8 or 16 POKEY registers either a constant or the offset of its stream), then one LZ stream per register that changes, each with one value per
 record.  Tokens come in groups of 8 behind a flag byte: a literal is one byte, a
 match is two bytes (9 bit offset, length 3 to 130) into that register's own
 last 512 values.  The format is described in the comment at the top of
 `tools/sidconv.c`, which also decodes every stream it writes the way the player
 does and refuses to write it if the result is not identical.
 
-The player keeps a 512 byte ring buffer per register (4 KB of RAM), decodes one
+The player keeps a 512 byte ring buffer per register (8 KB of RAM for the 16
+registers of two POKEYs), decodes one
 value per register per record and writes them all to POKEY in one burst, so that
 channels and 16 bit pairs change together.  A decode takes in the order of a
 thousand cycles per record (not measured), which is why even 4 records per frame
@@ -129,6 +152,15 @@ raw values with a 512 window were the smallest, so no delta arithmetic is needed
   rate 4 up; rate 0 is 2.3 ms against the datasheet's rounded 2 ms), and the level
   stops at the sustain value.  Streams are about 4% larger than with the old
   linear model (39.8 KB against 38.1 KB on the 31 tunes below).
+- Dual SID in atari800 with `-stereo` (both POKEYs recorded): records identical on
+  both chips, `AUDCTL` of each included, for 2x and 4x tunes, with different
+  layouts on the two chips, on the Atari 800 and the XE; stop / play again silences
+  both POKEYs and restarts from the first record.  Without `-stereo` the first
+  POKEY gets exactly SID 1 and keeps its `AUDCTL`.
+- All 264 HVSC files with a second SID: 260 convert, the second SID is audible in
+  258 of those (all address types); the other 4 hit existing limits (a KERNAL
+  call, an unsupported opcode, a main loop).  The 4370-tune sample gives the same
+  counts as before.
 - Compression, 31 tunes of 45 s: 238 KB in the previous mask/delta format, 38 KB
   now (6.2x smaller; per tune from 3.8x to 13.3x, median 6.7x; 60 s of Commando
   take 2 KB, 60 s of the 4x tune 3.5 KB).
